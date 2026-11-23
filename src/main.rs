@@ -59,6 +59,10 @@ fn pomodoro_top_space(side: f32) -> f32 {
     POMODORO_TOP_PADDING.min(side)
 }
 
+fn pomodoro_section_width(available_width: f32) -> f32 {
+    pomodoro_panel_side(available_width) + 2.0 * POMODORO_PANEL_MARGIN
+}
+
 fn start_button_size() -> egui::Vec2 {
     egui::vec2(
         BUTTON_WIDTH + 2.0 * BUTTON_PADDING,
@@ -94,12 +98,26 @@ fn todo_input_align() -> egui::Align2 {
     egui::Align2::CENTER_CENTER
 }
 
+fn todo_section_width(available_width: f32) -> f32 {
+    pomodoro_section_width(available_width).min(available_width)
+}
+
 fn todo_input_width(available_width: f32) -> f32 {
-    (POMODORO_PANEL_SIZE + 2.0 * POMODORO_PANEL_MARGIN).min(available_width)
+    todo_section_width(available_width)
 }
 
 fn todo_input_height() -> f32 {
     TODO_INPUT_HEIGHT
+}
+
+fn todo_list_auto_shrink() -> egui::Vec2b {
+    egui::Vec2b::new(false, true)
+}
+
+fn todo_list_scroll_area() -> egui::ScrollArea {
+    egui::ScrollArea::vertical()
+        .max_height(todo_list_max_height())
+        .auto_shrink(todo_list_auto_shrink())
 }
 
 fn todo_footer_height() -> f32 {
@@ -686,17 +704,18 @@ impl eframe::App for PomoworkApp {
 
                         // ---- To-do list ----
                         ui.add_space(18.0);
-                        ui.label(RichText::new("TO-DO LIST").size(13.0).weak());
-                        ui.add_space(4.0);
-                        ui.vertical_centered(|ui| {
-                            ui.set_min_width(todo_input_width(ui.available_width()));
-                            let mut toggled = None;
-                            if self.state.todos.is_empty() {
-                                ui.label(RichText::new("Nothing to do yet").weak().italics());
-                            } else {
-                                egui::ScrollArea::vertical()
-                                    .max_height(todo_list_max_height())
-                                    .show(ui, |ui| {
+                        let todo_width = todo_section_width(ui.available_width());
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(todo_width, 0.0),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
+                                ui.label(RichText::new("TO-DO LIST").size(13.0).weak());
+                                ui.add_space(4.0);
+                                let mut toggled = None;
+                                if self.state.todos.is_empty() {
+                                    ui.label(RichText::new("Nothing to do yet").weak().italics());
+                                } else {
+                                    todo_list_scroll_area().show(ui, |ui| {
                                         for (index, item) in self.state.todos.iter().enumerate() {
                                             let mut checked = item.done;
                                             if ui.checkbox(&mut checked, todo_text(item)).changed()
@@ -705,12 +724,13 @@ impl eframe::App for PomoworkApp {
                                             }
                                         }
                                     });
-                            }
-                            if let Some(index) = toggled {
-                                self.state.toggle_todo(index);
-                                self.save(now);
-                            }
-                        });
+                                }
+                                if let Some(index) = toggled {
+                                    self.state.toggle_todo(index);
+                                    self.save(now);
+                                }
+                            },
+                        );
                     });
                 });
 
@@ -1492,6 +1512,109 @@ mod tests {
         assert_eq!(frame.fill, todo_input_background());
         assert_eq!(frame.inner_margin, todo_input_margin());
         assert_eq!(frame.shadow.offset, todo_input_shadow().offset);
+    }
+
+    #[test]
+    fn pomodoro_section_width_includes_its_frame_margins() {
+        let panel_width = POMODORO_PANEL_SIZE + 2.0 * POMODORO_PANEL_MARGIN;
+
+        assert_eq!(pomodoro_section_width(500.0), panel_width);
+        assert_eq!(pomodoro_section_width(300.0), 300.0);
+    }
+
+    #[test]
+    fn todo_section_width_matches_the_pomodoro_section() {
+        let panel_width = POMODORO_PANEL_SIZE + 2.0 * POMODORO_PANEL_MARGIN;
+
+        assert_eq!(todo_section_width(500.0), panel_width);
+        assert_eq!(todo_section_width(390.0), panel_width);
+        assert_eq!(todo_input_width(500.0), todo_section_width(500.0));
+    }
+
+    #[test]
+    fn todo_section_fits_narrow_windows_and_stays_centered() {
+        assert_eq!(todo_section_width(10.0), 10.0);
+        assert_eq!(todo_section_width(300.0), 300.0);
+
+        let available = 390.0;
+        let width = todo_section_width(available);
+        let left = centered_left_pad(available, width);
+        assert_eq!(left, available - left - width);
+    }
+
+    #[test]
+    fn todo_section_container_is_centered_and_content_is_left_aligned() {
+        let window = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(390.0, 800.0));
+
+        egui::__run_test_ui(|ui| {
+            let mut content = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(window)
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+            );
+            let width = todo_section_width(content.available_width());
+            let mut container = egui::Rect::NOTHING;
+            let mut label_x = Vec::new();
+
+            content.allocate_ui_with_layout(
+                egui::vec2(width, 0.0),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    container = ui.max_rect();
+                    label_x.push(ui.label("TO-DO LIST").rect.min.x);
+                    label_x.push(ui.label("Nothing to do yet").rect.min.x);
+                },
+            );
+
+            assert_eq!(container.width(), width);
+            assert!((container.center().x - window.center().x).abs() < 1.0);
+            assert!(label_x.iter().all(|x| (*x - container.min.x).abs() < 1.0));
+        });
+    }
+
+    #[test]
+    fn todo_list_scroll_area_reaches_the_container_edge() {
+        let window = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(390.0, 800.0));
+
+        egui::__run_test_ui(|ui| {
+            let mut content = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(window)
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+            );
+            let width = todo_section_width(content.available_width());
+            let mut container_width = 0.0;
+            let mut final_scroll_width = 0.0;
+
+            content.allocate_ui_with_layout(
+                egui::vec2(width, 0.0),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    container_width = ui.max_rect().width();
+                    let output = todo_list_scroll_area().show(ui, |ui| {
+                        for text in ["Buy milk", "Walk the dog", "Write report"] {
+                            let mut checked = false;
+                            ui.checkbox(&mut checked, text);
+                        }
+                    });
+
+                    // A vertical ScrollArea shrinks to content width when auto_shrink.x is set.
+                    let auto_shrink = todo_list_auto_shrink();
+                    final_scroll_width = if auto_shrink.x {
+                        output.content_size.x
+                    } else {
+                        output.inner_rect.width()
+                    };
+                },
+            );
+
+            assert!(
+                (final_scroll_width - container_width).abs() < 1.0,
+                "scroll area is {}px wide, container is {}px wide",
+                final_scroll_width,
+                container_width
+            );
+        });
     }
 
     #[test]
