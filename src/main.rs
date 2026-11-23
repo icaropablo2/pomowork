@@ -20,12 +20,19 @@ const PROGRESS_CIRCLE_SIZE: f32 = 8.0;
 const BUTTON_PADDING: f32 = 8.0;
 const BUTTON_BASE_HEIGHT: f32 = 26.0;
 const TIMER_GROUP_PADDING: i8 = 32;
+const TODO_INPUT_BOTTOM_MARGIN: f32 = 80.0;
+const TODO_INPUT_HEIGHT: f32 = 44.0;
+const TODO_LIST_MAX_HEIGHT: f32 = 160.0;
 
 fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn centered_left_pad(available_width: f32, content_width: f32) -> f32 {
+    ((available_width - content_width) / 2.0).max(0.0)
 }
 
 fn centered_buttons<R>(
@@ -36,7 +43,7 @@ fn centered_buttons<R>(
 ) -> R {
     let spacing = ui.spacing().item_spacing.x;
     let row_width = count as f32 * button_width + spacing * count.saturating_sub(1) as f32;
-    let left_pad = ((ui.available_width() - row_width) / 2.0).max(0.0);
+    let left_pad = centered_left_pad(ui.available_width(), row_width);
     ui.horizontal(|ui| {
         ui.add_space(left_pad);
         add_buttons(ui)
@@ -61,6 +68,86 @@ fn start_button_size() -> egui::Vec2 {
 
 fn timer_group_margin() -> egui::Margin {
     egui::Margin::symmetric(0, TIMER_GROUP_PADDING)
+}
+
+fn window_inner_size() -> [f32; 2] {
+    [390.0, 800.0]
+}
+
+fn todo_list_max_height() -> f32 {
+    TODO_LIST_MAX_HEIGHT
+}
+
+fn todo_input_bottom_margin() -> f32 {
+    TODO_INPUT_BOTTOM_MARGIN
+}
+
+fn todo_input_background() -> Color32 {
+    Color32::from_gray(70)
+}
+
+fn todo_input_margin() -> egui::Margin {
+    egui::Margin::symmetric(14, 10)
+}
+
+fn todo_input_align() -> egui::Align2 {
+    egui::Align2::CENTER_CENTER
+}
+
+fn todo_input_width(available_width: f32) -> f32 {
+    (POMODORO_PANEL_SIZE + 2.0 * POMODORO_PANEL_MARGIN).min(available_width)
+}
+
+fn todo_input_height() -> f32 {
+    TODO_INPUT_HEIGHT
+}
+
+fn todo_footer_height() -> f32 {
+    todo_input_height() + todo_input_bottom_margin()
+}
+
+fn todo_content_rect(window: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        window.min,
+        egui::pos2(window.max.x, window.max.y - todo_footer_height()),
+    )
+}
+
+fn todo_footer_rect(window: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(window.min.x, window.max.y - todo_footer_height()),
+        window.max,
+    )
+}
+
+fn todo_input_shadow() -> egui::Shadow {
+    egui::Shadow {
+        offset: [0, 4],
+        blur: 12,
+        spread: 0,
+        color: Color32::from_black_alpha(90),
+    }
+}
+
+fn todo_input_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(todo_input_background())
+        .inner_margin(todo_input_margin())
+        .corner_radius(12.0)
+        .shadow(todo_input_shadow())
+}
+
+fn should_submit_todo(lost_focus: bool, enter_pressed: bool) -> bool {
+    lost_focus && enter_pressed
+}
+
+fn todo_text(item: &TodoItem) -> RichText {
+    let text = RichText::new(item.text.as_str());
+    if item.done {
+        text.strikethrough().weak()
+    } else {
+        text
+    }
 }
 
 fn progress_row_width(count: usize, circle_size: f32, spacing: f32) -> f32 {
@@ -167,6 +254,12 @@ impl TimerState {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct TodoItem {
+    text: String,
+    done: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum PomodoroMode {
     #[default]
@@ -209,6 +302,8 @@ struct AppState {
     completed_pomodoros: u32,
     #[serde(default = "default_auto_start_next")]
     auto_start_next: bool,
+    #[serde(default)]
+    todos: Vec<TodoItem>,
     pomodoro_done: bool,
     always_on_top: bool,
 }
@@ -221,6 +316,7 @@ impl Default for AppState {
             pomodoro_mode: PomodoroMode::default(),
             completed_pomodoros: 0,
             auto_start_next: default_auto_start_next(),
+            todos: Vec::new(),
             pomodoro_done: false,
             always_on_top: true,
         }
@@ -247,6 +343,24 @@ impl AppState {
                 }
             }
             PomodoroMode::ShortBreak | PomodoroMode::LongBreak => PomodoroMode::Pomodoro,
+        }
+    }
+
+    fn add_todo(&mut self, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        self.todos.push(TodoItem {
+            text: text.to_owned(),
+            done: false,
+        });
+        true
+    }
+
+    fn toggle_todo(&mut self, index: usize) {
+        if let Some(item) = self.todos.get_mut(index) {
+            item.done = !item.done;
         }
     }
 
@@ -298,6 +412,7 @@ struct PomoworkApp {
     state: AppState,
     last_saved: u128,
     applied_window_level: bool,
+    todo_input: String,
 }
 
 impl PomoworkApp {
@@ -306,6 +421,14 @@ impl PomoworkApp {
             state,
             last_saved: 0,
             applied_window_level: false,
+            todo_input: String::new(),
+        }
+    }
+
+    fn submit_todo(&mut self, now: u128) {
+        let text = std::mem::take(&mut self.todo_input);
+        if self.state.add_todo(&text) {
+            self.save(now);
         }
     }
 
@@ -359,186 +482,264 @@ impl eframe::App for PomoworkApp {
         let ctx = ui.ctx().clone();
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(10.0);
-                ui.label(RichText::new("POMOWORK").size(20.0).strong());
-                ui.add_space(12.0);
+            let window = ui.max_rect();
+            let mut content = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(todo_content_rect(window))
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+            );
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(&mut content, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("POMOWORK").size(20.0).strong());
+                        ui.add_space(12.0);
 
-                // ---- Stopwatch (top) ----
-                ui.vertical_centered(|ui| {
-                    ui.set_min_width(330.0);
-                    ui.label(RichText::new("TOTAL WORKED TODAY").size(13.0).weak());
-                    ui.add_space(4.0);
-                    let elapsed = self.state.stopwatch.elapsed(now);
-                    ui.label(
-                        RichText::new(format_stopwatch(elapsed))
-                            .monospace()
-                            .size(38.0)
-                            .strong(),
-                    );
-                    ui.add_space(8.0);
-                    let show_reset = self.state.stopwatch.is_paused();
-                    centered_buttons(ui, if show_reset { 2 } else { 1 }, BUTTON_WIDTH, |ui| {
-                        let toggle = if self.state.stopwatch.running {
-                            "Pause"
-                        } else {
-                            "Start"
-                        };
-                        if ui
-                            .add(egui::Button::new(toggle).min_size(egui::vec2(BUTTON_WIDTH, 0.0)))
-                            .clicked()
-                        {
-                            self.state.stopwatch.toggle(now);
-                            self.save(now);
-                        }
-                        if show_reset
-                            && ui
-                                .add(
-                                    egui::Button::new("Reset")
-                                        .min_size(egui::vec2(BUTTON_WIDTH, 0.0)),
-                                )
-                                .clicked()
-                        {
-                            self.state.stopwatch.reset();
-                            self.save(now);
-                        }
-                    });
-                });
-
-                ui.add_space(18.0);
-
-                // ---- Pomodoro (below) ----
-                ui.vertical_centered(|ui| {
-                    let side = pomodoro_panel_side(ui.available_width());
-                    let active_fill = ui.visuals().selection.bg_fill;
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(18, 18, 22))
-                        .inner_margin(POMODORO_PANEL_MARGIN)
-                        .corner_radius(12.0)
-                        .show(ui, |ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(side, side),
-                                egui::Layout::top_down(egui::Align::Center),
+                        // ---- Stopwatch (top) ----
+                        ui.vertical_centered(|ui| {
+                            ui.set_min_width(330.0);
+                            ui.label(RichText::new("TOTAL WORKED TODAY").size(13.0).weak());
+                            ui.add_space(4.0);
+                            let elapsed = self.state.stopwatch.elapsed(now);
+                            ui.label(
+                                RichText::new(format_stopwatch(elapsed))
+                                    .monospace()
+                                    .size(38.0)
+                                    .strong(),
+                            );
+                            ui.add_space(8.0);
+                            let show_reset = self.state.stopwatch.is_paused();
+                            centered_buttons(
+                                ui,
+                                if show_reset { 2 } else { 1 },
+                                BUTTON_WIDTH,
                                 |ui| {
-                                    ui.add_space(pomodoro_top_space(side));
-                                    centered_buttons(
-                                        ui,
-                                        PomodoroMode::ALL.len(),
-                                        MODE_BUTTON_WIDTH,
+                                    let toggle = if self.state.stopwatch.running {
+                                        "Pause"
+                                    } else {
+                                        "Start"
+                                    };
+                                    if ui
+                                        .add(
+                                            egui::Button::new(toggle)
+                                                .min_size(egui::vec2(BUTTON_WIDTH, 0.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.state.stopwatch.toggle(now);
+                                        self.save(now);
+                                    }
+                                    if show_reset
+                                        && ui
+                                            .add(
+                                                egui::Button::new("Reset")
+                                                    .min_size(egui::vec2(BUTTON_WIDTH, 0.0)),
+                                            )
+                                            .clicked()
+                                    {
+                                        self.state.stopwatch.reset();
+                                        self.save(now);
+                                    }
+                                },
+                            );
+                        });
+
+                        ui.add_space(18.0);
+
+                        // ---- Pomodoro (below) ----
+                        ui.vertical_centered(|ui| {
+                            let side = pomodoro_panel_side(ui.available_width());
+                            let active_fill = ui.visuals().selection.bg_fill;
+                            egui::Frame::new()
+                                .fill(Color32::from_rgb(18, 18, 22))
+                                .inner_margin(POMODORO_PANEL_MARGIN)
+                                .corner_radius(12.0)
+                                .show(ui, |ui| {
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(side, side),
+                                        egui::Layout::top_down(egui::Align::Center),
                                         |ui| {
-                                            for mode in PomodoroMode::ALL {
-                                                let selected = self.state.pomodoro_mode == mode;
+                                            ui.add_space(pomodoro_top_space(side));
+                                            centered_buttons(
+                                                ui,
+                                                PomodoroMode::ALL.len(),
+                                                MODE_BUTTON_WIDTH,
+                                                |ui| {
+                                                    for mode in PomodoroMode::ALL {
+                                                        let selected =
+                                                            self.state.pomodoro_mode == mode;
+                                                        if ui
+                                                            .add(
+                                                                egui::Button::new(mode.label())
+                                                                    .selected(selected)
+                                                                    .min_size(egui::vec2(
+                                                                        MODE_BUTTON_WIDTH,
+                                                                        0.0,
+                                                                    )),
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            self.state.select_pomodoro_mode(mode);
+                                                            self.save(now);
+                                                        }
+                                                    }
+                                                },
+                                            );
+                                            egui::Frame::new()
+                                                .inner_margin(timer_group_margin())
+                                                .show(ui, |ui| {
+                                                    ui.vertical_centered(|ui| {
+                                                        let mode = self.state.pomodoro_mode;
+                                                        let remaining = (mode.seconds()
+                                                            - self.state.pomodoro.elapsed(now))
+                                                        .max(0.0);
+                                                        let color = if self.state.pomodoro_done {
+                                                            Color32::from_rgb(255, 120, 120)
+                                                        } else if self.state.pomodoro.running {
+                                                            Color32::from_rgb(120, 220, 160)
+                                                        } else {
+                                                            Color32::from_gray(230)
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(format_countdown(
+                                                                remaining,
+                                                            ))
+                                                            .monospace()
+                                                            .size(44.0)
+                                                            .strong()
+                                                            .color(color),
+                                                        );
+                                                        ui.add_space(4.0);
+                                                        if self.state.pomodoro_done {
+                                                            ui.label(
+                                                                RichText::new(format!(
+                                                                    "{} ready · press Start",
+                                                                    mode.label()
+                                                                ))
+                                                                .size(14.0)
+                                                                .color(Color32::from_rgb(
+                                                                    255, 120, 120,
+                                                                )),
+                                                            );
+                                                        } else {
+                                                            progress_indicator(
+                                                                ui,
+                                                                self.state.completed_pomodoros,
+                                                                POMODOROS_PER_LONG_BREAK,
+                                                            );
+                                                        }
+                                                    });
+                                                });
+                                            let button_size = start_button_size();
+                                            centered_buttons(ui, 1, button_size.x, |ui| {
+                                                let toggle = if self.state.pomodoro.running {
+                                                    "Pause"
+                                                } else {
+                                                    "Start"
+                                                };
                                                 if ui
                                                     .add(
-                                                        egui::Button::new(mode.label())
-                                                            .selected(selected)
-                                                            .min_size(egui::vec2(
-                                                                MODE_BUTTON_WIDTH,
-                                                                0.0,
-                                                            )),
+                                                        egui::Button::new(toggle)
+                                                            .fill(active_fill)
+                                                            .min_size(button_size),
                                                     )
                                                     .clicked()
                                                 {
-                                                    self.state.select_pomodoro_mode(mode);
+                                                    if self.state.pomodoro_done {
+                                                        self.state.pomodoro.reset();
+                                                        self.state.pomodoro_done = false;
+                                                    }
+                                                    self.state.pomodoro.toggle(now);
                                                     self.save(now);
-                                                }
-                                            }
-                                        },
-                                    );
-                                    egui::Frame::new().inner_margin(timer_group_margin()).show(
-                                        ui,
-                                        |ui| {
-                                            ui.vertical_centered(|ui| {
-                                                let mode = self.state.pomodoro_mode;
-                                                let remaining = (mode.seconds()
-                                                    - self.state.pomodoro.elapsed(now))
-                                                .max(0.0);
-                                                let color = if self.state.pomodoro_done {
-                                                    Color32::from_rgb(255, 120, 120)
-                                                } else if self.state.pomodoro.running {
-                                                    Color32::from_rgb(120, 220, 160)
-                                                } else {
-                                                    Color32::from_gray(230)
-                                                };
-                                                ui.label(
-                                                    RichText::new(format_countdown(remaining))
-                                                        .monospace()
-                                                        .size(44.0)
-                                                        .strong()
-                                                        .color(color),
-                                                );
-                                                ui.add_space(4.0);
-                                                if self.state.pomodoro_done {
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "{} ready · press Start",
-                                                            mode.label()
-                                                        ))
-                                                        .size(14.0)
-                                                        .color(Color32::from_rgb(255, 120, 120)),
-                                                    );
-                                                } else {
-                                                    progress_indicator(
-                                                        ui,
-                                                        self.state.completed_pomodoros,
-                                                        POMODOROS_PER_LONG_BREAK,
-                                                    );
                                                 }
                                             });
                                         },
                                     );
-                                    let button_size = start_button_size();
-                                    centered_buttons(ui, 1, button_size.x, |ui| {
-                                        let toggle = if self.state.pomodoro.running {
-                                            "Pause"
-                                        } else {
-                                            "Start"
-                                        };
-                                        if ui
-                                            .add(
-                                                egui::Button::new(toggle)
-                                                    .fill(active_fill)
-                                                    .min_size(button_size),
-                                            )
-                                            .clicked()
-                                        {
-                                            if self.state.pomodoro_done {
-                                                self.state.pomodoro.reset();
-                                                self.state.pomodoro_done = false;
+                                });
+                        });
+
+                        ui.add_space(10.0);
+                        if ui
+                            .checkbox(&mut self.state.auto_start_next, "Auto-start next session")
+                            .changed()
+                        {
+                            self.save(now);
+                        }
+
+                        ui.add_space(10.0);
+                        let pin = if self.state.always_on_top {
+                            "Unpin window"
+                        } else {
+                            "Pin on top"
+                        };
+                        if ui.button(pin).clicked() {
+                            self.state.always_on_top = !self.state.always_on_top;
+                            let level = if self.state.always_on_top {
+                                WindowLevel::AlwaysOnTop
+                            } else {
+                                WindowLevel::Normal
+                            };
+                            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
+                            self.save(now);
+                        }
+
+                        // ---- To-do list ----
+                        ui.add_space(18.0);
+                        ui.label(RichText::new("TO-DO LIST").size(13.0).weak());
+                        ui.add_space(4.0);
+                        ui.vertical_centered(|ui| {
+                            ui.set_min_width(todo_input_width(ui.available_width()));
+                            let mut toggled = None;
+                            if self.state.todos.is_empty() {
+                                ui.label(RichText::new("Nothing to do yet").weak().italics());
+                            } else {
+                                egui::ScrollArea::vertical()
+                                    .max_height(todo_list_max_height())
+                                    .show(ui, |ui| {
+                                        for (index, item) in self.state.todos.iter().enumerate() {
+                                            let mut checked = item.done;
+                                            if ui.checkbox(&mut checked, todo_text(item)).changed()
+                                            {
+                                                toggled = Some(index);
                                             }
-                                            self.state.pomodoro.toggle(now);
-                                            self.save(now);
                                         }
                                     });
-                                },
-                            );
+                            }
+                            if let Some(index) = toggled {
+                                self.state.toggle_todo(index);
+                                self.save(now);
+                            }
                         });
+                    });
                 });
 
-                ui.add_space(10.0);
-                if ui
-                    .checkbox(&mut self.state.auto_start_next, "Auto-start next session")
-                    .changed()
-                {
-                    self.save(now);
-                }
-
-                ui.add_space(10.0);
-                let pin = if self.state.always_on_top {
-                    "Unpin window"
-                } else {
-                    "Pin on top"
-                };
-                if ui.button(pin).clicked() {
-                    self.state.always_on_top = !self.state.always_on_top;
-                    let level = if self.state.always_on_top {
-                        WindowLevel::AlwaysOnTop
-                    } else {
-                        WindowLevel::Normal
-                    };
-                    ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
-                    self.save(now);
-                }
+            let mut footer = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(todo_footer_rect(window))
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+            );
+            footer.vertical_centered(|ui| {
+                let input_width = todo_input_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.add_space(centered_left_pad(ui.available_width(), input_width));
+                    let input = ui.add(
+                        egui::TextEdit::singleline(&mut self.todo_input)
+                            .hint_text("New to-do")
+                            .desired_width(input_width)
+                            .min_size(egui::vec2(input_width, todo_input_height()))
+                            .frame(todo_input_frame())
+                            .align(todo_input_align()),
+                    );
+                    if should_submit_todo(
+                        input.lost_focus(),
+                        ui.input(|keys| keys.key_pressed(egui::Key::Enter)),
+                    ) {
+                        self.submit_todo(now);
+                        input.request_focus();
+                    }
+                });
+                ui.add_space(todo_input_bottom_margin());
             });
         });
     }
@@ -566,7 +767,7 @@ fn main() -> eframe::Result<()> {
         centered: true,
         viewport: egui::ViewportBuilder::default()
             .with_title("Pomowork")
-            .with_inner_size([390.0, 500.0])
+            .with_inner_size(window_inner_size())
             .with_min_inner_size([340.0, 460.0]),
         ..Default::default()
     };
@@ -995,6 +1196,8 @@ mod tests {
         expected.auto_start_next = false;
         expected.pomodoro_done = true;
         expected.always_on_top = false;
+        expected.add_todo("Buy milk");
+        expected.toggle_todo(0);
 
         save_state_to(&path, &expected);
         let restored = load_state_from(&path);
@@ -1006,6 +1209,7 @@ mod tests {
         assert!(!restored.auto_start_next);
         assert!(restored.pomodoro_done);
         assert!(!restored.always_on_top);
+        assert_eq!(restored.todos, expected.todos);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1074,5 +1278,232 @@ mod tests {
         assert!(app.maybe_complete_session(now));
         assert_eq!(app.state.pomodoro_mode, PomodoroMode::Pomodoro);
         assert_eq!(app.state.completed_pomodoros, 2);
+    }
+
+    #[test]
+    fn todos_start_empty() {
+        assert!(AppState::default().todos.is_empty());
+    }
+
+    #[test]
+    fn adding_a_todo_appends_an_unchecked_item() {
+        let mut state = AppState::default();
+
+        assert!(state.add_todo("  Buy milk  "));
+        assert!(state.add_todo("Walk the dog"));
+
+        assert_eq!(
+            state.todos,
+            vec![
+                TodoItem {
+                    text: "Buy milk".to_owned(),
+                    done: false,
+                },
+                TodoItem {
+                    text: "Walk the dog".to_owned(),
+                    done: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn blank_todos_are_ignored() {
+        let mut state = AppState::default();
+
+        assert!(!state.add_todo(""));
+        assert!(!state.add_todo("   \t "));
+
+        assert!(state.todos.is_empty());
+    }
+
+    #[test]
+    fn toggling_a_todo_changes_its_done_state() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+
+        state.toggle_todo(0);
+        assert!(state.todos[0].done);
+
+        state.toggle_todo(0);
+        assert!(!state.todos[0].done);
+    }
+
+    #[test]
+    fn toggling_an_unknown_todo_is_a_noop() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+
+        state.toggle_todo(7);
+
+        assert_eq!(state.todos.len(), 1);
+        assert!(!state.todos[0].done);
+    }
+
+    #[test]
+    fn completed_todos_render_with_strikethrough() {
+        let pending = TodoItem {
+            text: "Buy milk".to_owned(),
+            done: false,
+        };
+        let done = TodoItem {
+            text: "Buy milk".to_owned(),
+            done: true,
+        };
+
+        assert_eq!(todo_text(&pending), RichText::new("Buy milk"));
+        assert_eq!(
+            todo_text(&done),
+            RichText::new("Buy milk").strikethrough().weak()
+        );
+        assert_eq!(todo_text(&done).text(), "Buy milk");
+    }
+
+    #[test]
+    fn submitting_the_input_adds_a_todo_and_clears_the_field() {
+        let mut app = PomoworkApp::new(AppState::default());
+        app.todo_input = "  Write report  ".to_owned();
+
+        app.submit_todo(1_000);
+
+        assert_eq!(app.state.todos.len(), 1);
+        assert_eq!(app.state.todos[0].text, "Write report");
+        assert!(app.todo_input.is_empty());
+        assert_eq!(app.last_saved, 1_000);
+    }
+
+    #[test]
+    fn submitting_blank_input_does_not_add_or_save() {
+        let mut app = PomoworkApp::new(AppState::default());
+        app.todo_input = "   ".to_owned();
+
+        app.submit_todo(2_000);
+
+        assert!(app.state.todos.is_empty());
+        assert!(app.todo_input.is_empty());
+        assert_eq!(app.last_saved, 0);
+    }
+
+    #[test]
+    fn todos_survive_serialization() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.toggle_todo(0);
+        state.add_todo("Walk the dog");
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.todos, state.todos);
+    }
+
+    #[test]
+    fn old_state_without_todos_loads_an_empty_list() {
+        let json = serde_json::to_string(&AppState::default()).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value.as_object_mut().unwrap().remove("todos");
+
+        let restored: AppState = serde_json::from_value(value).unwrap();
+
+        assert!(restored.todos.is_empty());
+    }
+
+    #[test]
+    fn window_is_tall_enough_to_show_the_todo_section() {
+        let [width, height] = window_inner_size();
+
+        assert!(width >= 340.0);
+        assert!(height >= 680.0);
+    }
+
+    #[test]
+    fn todo_list_scrolls_instead_of_growing_the_window() {
+        let max_height = todo_list_max_height();
+
+        assert!(max_height > 0.0);
+        assert!(max_height < window_inner_size()[1] / 2.0);
+    }
+
+    #[test]
+    fn centered_content_has_equal_padding_and_never_goes_negative() {
+        assert_eq!(centered_left_pad(330.0, 240.0), 45.0);
+        assert_eq!(centered_left_pad(240.0, 240.0), 0.0);
+        assert_eq!(centered_left_pad(200.0, 240.0), 0.0);
+    }
+
+    #[test]
+    fn todo_is_submitted_only_when_enter_ends_the_input() {
+        assert!(should_submit_todo(true, true));
+        assert!(!should_submit_todo(false, true));
+        assert!(!should_submit_todo(true, false));
+    }
+
+    #[test]
+    fn todo_input_has_an_eighty_pixel_bottom_margin() {
+        assert_eq!(todo_input_bottom_margin(), 80.0);
+        assert!(window_inner_size()[1] >= 680.0 + todo_input_bottom_margin());
+    }
+
+    #[test]
+    fn todo_input_has_a_grey_background() {
+        let color = todo_input_background();
+
+        assert_eq!(color.r(), color.g());
+        assert_eq!(color.g(), color.b());
+        assert!(color.r() > 0 && color.r() < 255);
+    }
+
+    #[test]
+    fn todo_input_has_extra_padding() {
+        let margin = todo_input_margin();
+
+        assert!(margin.left >= 10);
+        assert!(margin.right >= 10);
+        assert!(margin.top >= 6);
+        assert!(margin.bottom >= 6);
+    }
+
+    #[test]
+    fn todo_input_text_is_centered() {
+        assert!(todo_input_align() == egui::Align2::CENTER_CENTER);
+    }
+
+    #[test]
+    fn todo_input_matches_the_pomodoro_panel_width() {
+        let panel_width = POMODORO_PANEL_SIZE + 2.0 * POMODORO_PANEL_MARGIN;
+
+        assert_eq!(todo_input_width(500.0), panel_width);
+        assert_eq!(todo_input_width(300.0), 300.0);
+    }
+
+    #[test]
+    fn todo_input_has_a_drop_shadow() {
+        let shadow = todo_input_shadow();
+
+        assert!(shadow.offset[1] > 0);
+        assert!(shadow.blur > 0);
+        assert!(shadow.color.a() > 0);
+    }
+
+    #[test]
+    fn todo_input_frame_combines_grey_fill_padding_and_shadow() {
+        let frame = todo_input_frame();
+
+        assert_eq!(frame.fill, todo_input_background());
+        assert_eq!(frame.inner_margin, todo_input_margin());
+        assert_eq!(frame.shadow.offset, todo_input_shadow().offset);
+    }
+
+    #[test]
+    fn todo_input_footer_is_anchored_to_the_bottom_of_the_window() {
+        let window = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(390.0, 800.0));
+
+        let footer = todo_footer_rect(window);
+        let content = todo_content_rect(window);
+
+        assert_eq!(footer.max, window.max);
+        assert_eq!(footer.height(), todo_footer_height());
+        assert_eq!(content.max.y, footer.min.y);
+        assert_eq!(content.min, window.min);
     }
 }
