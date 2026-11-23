@@ -8,12 +8,28 @@ use std::{
 
 const POMODORO_SECONDS: f64 = 25.0 * 60.0;
 const SAVE_INTERVAL_MS: u128 = 2_000;
+const BUTTON_WIDTH: f32 = 108.0;
 
 fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn centered_buttons<R>(
+    ui: &mut egui::Ui,
+    count: usize,
+    add_buttons: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let spacing = ui.spacing().item_spacing.x;
+    let row_width = count as f32 * BUTTON_WIDTH + spacing * count.saturating_sub(1) as f32;
+    let left_pad = ((ui.available_width() - row_width) / 2.0).max(0.0);
+    ui.horizontal(|ui| {
+        ui.add_space(left_pad);
+        add_buttons(ui)
+    })
+    .inner
 }
 
 /// A timer that stores its accumulated time plus the wall-clock time of the
@@ -57,6 +73,10 @@ impl TimerState {
 
     fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    fn is_paused(&self) -> bool {
+        !self.running && self.elapsed_secs > 0.0
     }
 }
 
@@ -185,17 +205,31 @@ impl eframe::App for PomoworkApp {
                                 .strong(),
                         );
                         ui.add_space(8.0);
-                        ui.horizontal(|ui| {
+                        let show_reset = self.state.stopwatch.is_paused();
+                        centered_buttons(ui, if show_reset { 2 } else { 1 }, |ui| {
                             let toggle = if self.state.stopwatch.running {
                                 "Pause"
                             } else {
                                 "Start"
                             };
-                            if ui.button(toggle).clicked() {
+                            if ui
+                                .add(
+                                    egui::Button::new(toggle)
+                                        .min_size(egui::vec2(BUTTON_WIDTH, 0.0)),
+                                )
+                                .clicked()
+                            {
                                 self.state.stopwatch.toggle(now);
                                 self.save(now);
                             }
-                            if ui.button("Reset").clicked() {
+                            if show_reset
+                                && ui
+                                    .add(
+                                        egui::Button::new("Reset")
+                                            .min_size(egui::vec2(BUTTON_WIDTH, 0.0)),
+                                    )
+                                    .clicked()
+                            {
                                 self.state.stopwatch.reset();
                                 self.save(now);
                             }
@@ -236,7 +270,7 @@ impl eframe::App for PomoworkApp {
                             );
                         }
                         ui.add_space(8.0);
-                        ui.horizontal(|ui| {
+                        centered_buttons(ui, 1, |ui| {
                             let toggle = if self.state.pomodoro.running {
                                 "Pause"
                             } else if self.state.pomodoro_done {
@@ -244,17 +278,18 @@ impl eframe::App for PomoworkApp {
                             } else {
                                 "Start"
                             };
-                            if ui.button(toggle).clicked() {
+                            if ui
+                                .add(
+                                    egui::Button::new(toggle)
+                                        .min_size(egui::vec2(BUTTON_WIDTH, 0.0)),
+                                )
+                                .clicked()
+                            {
                                 if self.state.pomodoro_done {
                                     self.state.pomodoro.reset();
                                     self.state.pomodoro_done = false;
                                 }
                                 self.state.pomodoro.toggle(now);
-                                self.save(now);
-                            }
-                            if ui.button("Reset").clicked() {
-                                self.state.pomodoro.reset();
-                                self.state.pomodoro_done = false;
                                 self.save(now);
                             }
                         });
@@ -287,13 +322,11 @@ impl eframe::App for PomoworkApp {
 }
 
 fn format_stopwatch(secs: f64) -> String {
-    let total_ms = (secs * 1000.0) as u64;
-    let millis = total_ms % 1000;
-    let total_secs = total_ms / 1000;
+    let total_secs = secs as u64;
     let seconds = total_secs % 60;
     let minutes = (total_secs / 60) % 60;
     let hours = total_secs / 3600;
-    format!("{hours:02}:{minutes:02}:{seconds:02}.{millis:03}")
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
 fn format_countdown(secs: f64) -> String {
@@ -340,9 +373,24 @@ mod tests {
     }
 
     #[test]
+    fn reset_is_only_available_when_paused_with_time() {
+        let mut timer = TimerState::default();
+        assert!(!timer.is_paused());
+
+        timer.toggle(1_000);
+        assert!(!timer.is_paused());
+
+        timer.toggle(4_000);
+        assert!(timer.is_paused());
+
+        timer.reset();
+        assert!(!timer.is_paused());
+    }
+
+    #[test]
     fn formats_time() {
-        assert_eq!(format_stopwatch(0.0), "00:00:00.000");
-        assert_eq!(format_stopwatch(3_723.456), "01:02:03.456");
+        assert_eq!(format_stopwatch(0.0), "00:00:00");
+        assert_eq!(format_stopwatch(3_723.456), "01:02:03");
         assert_eq!(format_countdown(1_500.0), "25:00");
         assert_eq!(format_countdown(0.4), "00:01");
         assert_eq!(format_countdown(0.0), "00:00");

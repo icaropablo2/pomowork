@@ -4,8 +4,8 @@ A small cross-platform desktop app that combines a stopwatch and a 25-minute Pom
 
 ## Features
 
-- **Stopwatch** on top with Start/Pause and Reset.
-- **Pomodoro** below it, starting at 25:00, with Start/Pause and Reset. Shows "Break time!" when finished.
+- **Stopwatch** on top with Start/Pause and Reset (shown only once paused with time on the clock). Displays `HH:MM:SS`.
+- **Pomodoro** below it, starting at 25:00, with Start/Pause. Shows "Break time!" when finished; "Start new" begins a fresh session.
 - Window is centered on screen and can be pinned always-on-top (on by default).
 - Session state persists to disk, so closing and reopening the app restores both timers (including elapsed time while the app was closed).
 
