@@ -22,7 +22,9 @@ const BUTTON_BASE_HEIGHT: f32 = 26.0;
 const TIMER_GROUP_PADDING: i8 = 32;
 const TODO_INPUT_BOTTOM_MARGIN: f32 = 80.0;
 const TODO_INPUT_HEIGHT: f32 = 44.0;
-const TODO_LIST_MAX_HEIGHT: f32 = 160.0;
+const TODO_LIST_MIN_HEIGHT: f32 = 84.0;
+const TODO_ROW_HEIGHT: f32 = 28.0;
+const TODO_ROW_CORNER_RADIUS: f32 = 6.0;
 
 fn now_millis() -> u128 {
     SystemTime::now()
@@ -78,8 +80,8 @@ fn window_inner_size() -> [f32; 2] {
     [390.0, 800.0]
 }
 
-fn todo_list_max_height() -> f32 {
-    TODO_LIST_MAX_HEIGHT
+fn todo_list_max_height(available_height: f32) -> f32 {
+    available_height.max(TODO_LIST_MIN_HEIGHT)
 }
 
 fn todo_input_bottom_margin() -> f32 {
@@ -114,9 +116,9 @@ fn todo_list_auto_shrink() -> egui::Vec2b {
     egui::Vec2b::new(false, true)
 }
 
-fn todo_list_scroll_area() -> egui::ScrollArea {
+fn todo_list_scroll_area(available_height: f32) -> egui::ScrollArea {
     egui::ScrollArea::vertical()
-        .max_height(todo_list_max_height())
+        .max_height(todo_list_max_height(available_height))
         .auto_shrink(todo_list_auto_shrink())
 }
 
@@ -166,6 +168,33 @@ fn todo_text(item: &TodoItem) -> RichText {
     } else {
         text
     }
+}
+
+fn todo_row_background(hovered: bool) -> Color32 {
+    if hovered {
+        Color32::from_white_alpha(18)
+    } else {
+        Color32::TRANSPARENT
+    }
+}
+
+fn todo_row_hovered(ui: &egui::Ui, rect: egui::Rect) -> bool {
+    ui.rect_contains_pointer(rect)
+}
+
+fn todo_row(ui: &mut egui::Ui, item: &TodoItem) -> bool {
+    let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), TODO_ROW_HEIGHT));
+    let background = todo_row_background(todo_row_hovered(ui, rect));
+    ui.painter()
+        .rect_filled(rect, TODO_ROW_CORNER_RADIUS, background);
+
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let mut checked = item.done;
+    row_ui.checkbox(&mut checked, todo_text(item)).changed()
 }
 
 fn progress_row_width(count: usize, circle_size: f32, spacing: f32) -> f32 {
@@ -705,8 +734,9 @@ impl eframe::App for PomoworkApp {
                         // ---- To-do list ----
                         ui.add_space(18.0);
                         let todo_width = todo_section_width(ui.available_width());
+                        let todo_height = ui.available_height().max(0.0);
                         ui.allocate_ui_with_layout(
-                            egui::vec2(todo_width, 0.0),
+                            egui::vec2(todo_width, todo_height),
                             egui::Layout::top_down(egui::Align::LEFT),
                             |ui| {
                                 ui.label(RichText::new("TO-DO LIST").size(13.0).weak());
@@ -715,11 +745,9 @@ impl eframe::App for PomoworkApp {
                                 if self.state.todos.is_empty() {
                                     ui.label(RichText::new("Nothing to do yet").weak().italics());
                                 } else {
-                                    todo_list_scroll_area().show(ui, |ui| {
+                                    todo_list_scroll_area(ui.available_height()).show(ui, |ui| {
                                         for (index, item) in self.state.todos.iter().enumerate() {
-                                            let mut checked = item.done;
-                                            if ui.checkbox(&mut checked, todo_text(item)).changed()
-                                            {
+                                            if todo_row(ui, item) {
                                                 toggled = Some(index);
                                             }
                                         }
@@ -1380,6 +1408,43 @@ mod tests {
     }
 
     #[test]
+    fn todo_row_background_appears_only_on_hover() {
+        let idle = todo_row_background(false);
+        let hovered = todo_row_background(true);
+
+        assert_eq!(idle, Color32::TRANSPARENT);
+        assert_ne!(hovered, idle);
+        assert!(hovered.a() > 0);
+        assert!(hovered.r() < 100);
+    }
+
+    #[test]
+    fn todo_row_hover_detection_covers_the_whole_row() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+        let row =
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, TODO_ROW_HEIGHT));
+        let over_checkbox = egui::pos2(10.0, TODO_ROW_HEIGHT / 2.0);
+
+        let output = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::PointerMoved(over_checkbox)],
+                ..Default::default()
+            },
+            |ui| {
+                let mut checked = false;
+                ui.checkbox(&mut checked, "Buy milk");
+                assert!(todo_row_hovered(ui, row));
+                assert!(!todo_row_hovered(
+                    ui,
+                    row.translate(egui::vec2(0.0, TODO_ROW_HEIGHT * 2.0))
+                ));
+            },
+        );
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
     fn submitting_the_input_adds_a_todo_and_clears_the_field() {
         let mut app = PomoworkApp::new(AppState::default());
         app.todo_input = "  Write report  ".to_owned();
@@ -1437,11 +1502,72 @@ mod tests {
     }
 
     #[test]
-    fn todo_list_scrolls_instead_of_growing_the_window() {
-        let max_height = todo_list_max_height();
+    fn todo_list_uses_the_space_above_the_footer() {
+        let content_height = window_inner_size()[1] - todo_footer_height();
 
-        assert!(max_height > 0.0);
-        assert!(max_height < window_inner_size()[1] / 2.0);
+        assert_eq!(todo_list_max_height(content_height), content_height);
+        assert!(content_height > TODO_LIST_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn todo_list_keeps_a_usable_minimum_when_space_is_tight() {
+        assert_eq!(todo_list_max_height(0.0), TODO_LIST_MIN_HEIGHT);
+        assert_eq!(todo_list_max_height(10.0), TODO_LIST_MIN_HEIGHT);
+        assert_eq!(todo_list_max_height(120.0), 120.0);
+    }
+
+    #[test]
+    fn todo_list_shows_every_item_when_they_fit_in_the_available_space() {
+        egui::__run_test_ui(|ui| {
+            let area = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 300.0));
+            let mut list = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(area)
+                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            );
+
+            let output = todo_list_scroll_area(list.available_height()).show(&mut list, |ui| {
+                for number in 0..8 {
+                    let item = TodoItem {
+                        text: format!("Task {number}"),
+                        done: false,
+                    };
+                    todo_row(ui, &item);
+                }
+            });
+
+            assert!(
+                output.inner_rect.height() >= output.content_size.y,
+                "list viewport is {}px but content is {}px",
+                output.inner_rect.height(),
+                output.content_size.y
+            );
+        });
+    }
+
+    #[test]
+    fn todo_list_still_scrolls_when_items_exceed_the_available_space() {
+        egui::__run_test_ui(|ui| {
+            let area = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 300.0));
+            let mut list = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(area)
+                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            );
+
+            let output = todo_list_scroll_area(list.available_height()).show(&mut list, |ui| {
+                for number in 0..20 {
+                    let item = TodoItem {
+                        text: format!("Task {number}"),
+                        done: false,
+                    };
+                    todo_row(ui, &item);
+                }
+            });
+
+            assert!(output.content_size.y > output.inner_rect.height());
+            assert!(output.inner_rect.height() <= area.height());
+        });
     }
 
     #[test]
@@ -1591,7 +1717,7 @@ mod tests {
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
                     container_width = ui.max_rect().width();
-                    let output = todo_list_scroll_area().show(ui, |ui| {
+                    let output = todo_list_scroll_area(300.0).show(ui, |ui| {
                         for text in ["Buy milk", "Walk the dog", "Write report"] {
                             let mut checked = false;
                             ui.checkbox(&mut checked, text);
