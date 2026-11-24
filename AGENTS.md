@@ -9,14 +9,23 @@ Instructions for AI agents working in this repository.
 ## Layout
 
 ```
-Cargo.toml       # crate metadata and dependencies
-src/main.rs      # entire application: timer logic, persistence, tests, UI
-Makefile         # common developer commands (`make help`)
-README.md        # user-facing build/run instructions
-target/          # build output (gitignored, never edit)
+Cargo.toml           # crate metadata and dependencies
+src/main.rs          # module declarations + native entry point only
+src/app.rs           # PomoworkApp, eframe::App impl, orchestration
+src/timer.rs         # clock, time formatting, TimerState
+src/state.rs         # TodoItem, PomodoroMode, AppState + domain rules
+src/persistence.rs   # JSON save/load
+src/audio.rs         # AudioCommand/Director/Player, embedded sounds
+src/ui.rs            # egui layout helpers
+Makefile             # common developer commands (`make help`)
+README.md            # user-facing build/run instructions
+assets/              # embedded MP3 files
+target/              # build output (gitignored, never edit)
 ```
 
-There is deliberately no separate module structure yet. Keep new code in `src/main.rs` until it becomes genuinely unwieldy, then split into modules (e.g. `timer.rs`, `persistence.rs`, `ui.rs`).
+Modules are split by responsibility. Dependencies flow one way:
+`main -> app -> { ui, persistence, audio } -> state -> timer`. The `ui`,
+`state`, `audio`, and `persistence` modules must not import `app`.
 
 ## Commands
 
@@ -43,7 +52,7 @@ Do not commit `target/`.
 
 TDD is mandatory for all code changes. Follow the red-green-refactor cycle:
 
-1. **Red:** Before writing or modifying any implementation, add or update a test in the `tests` module at the bottom of `src/main.rs` that covers the new or changed behavior. Run `make test` and confirm the new test fails for the expected reason.
+1. **Red:** Before writing or modifying any implementation, add or update a test in the `#[cfg(test)] mod tests` of the module that owns the behavior (for example `src/timer.rs` for timer math, `src/state.rs` for serialization, `src/ui.rs` for layout helpers). Run `make test` and confirm the new test fails for the expected reason.
 2. **Green:** Write the smallest implementation that makes the test pass. Run `make test` again and confirm all tests pass.
 3. **Refactor:** Clean up the code while keeping all tests green.
 
@@ -51,7 +60,7 @@ Rules:
 
 - Every implementation must have tests. No new function, branch, behavior, or bug fix is complete without a corresponding test that covers it.
 - Every time we create something new or modify existing code, tests covering that change must be written **first**, before the implementation.
-- If a change is genuinely untestable in the `tests` module (for example, pure UI wiring), note that explicitly and keep the untested surface as small as possible; all logic around it still needs tests.
+- If a change is genuinely untestable in the owning module's `tests` module (for example, pure UI wiring), note that explicitly and keep the untested surface as small as possible; all logic around it still needs tests.
 - Never skip, weaken, or delete tests just to make a change pass. Fix the implementation instead.
 - Run `make test` after every red and green step, and `make check` before declaring a task complete.
 
@@ -69,7 +78,7 @@ Rules:
 ## Conventions
 
 - Run `make check` before declaring a task complete. Warnings are errors in this project.
-- Add or update unit tests in the `tests` module at the bottom of `src/main.rs` first (before implementation) for every new or modified behavior, especially timer math, time formatting, and serialization. See the TDD section above.
+- Add or update unit tests in the owning module's `tests` module first (before implementation) for every new or modified behavior, especially timer math, time formatting, and serialization. See the TDD section above.
 - Keep the UI simple and vertically centered: stopwatch group on top, pomodoro group below, pin toggle last.
 - Prefer small, focused changes. Avoid adding dependencies unless they remove significant complexity.
 - Update `README.md` if user-facing behavior, build steps, or state location changes.
