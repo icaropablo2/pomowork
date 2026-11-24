@@ -182,9 +182,16 @@ fn todo_row_hovered(ui: &egui::Ui, rect: egui::Rect) -> bool {
     ui.rect_contains_pointer(rect)
 }
 
-fn todo_row(ui: &mut egui::Ui, item: &TodoItem) -> bool {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TodoRowResponse {
+    toggled: bool,
+    removed: bool,
+}
+
+fn todo_row(ui: &mut egui::Ui, item: &TodoItem) -> TodoRowResponse {
     let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), TODO_ROW_HEIGHT));
-    let background = todo_row_background(todo_row_hovered(ui, rect));
+    let hovered = todo_row_hovered(ui, rect);
+    let background = todo_row_background(hovered);
     ui.painter()
         .rect_filled(rect, TODO_ROW_CORNER_RADIUS, background);
 
@@ -194,7 +201,21 @@ fn todo_row(ui: &mut egui::Ui, item: &TodoItem) -> bool {
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     let mut checked = item.done;
-    row_ui.checkbox(&mut checked, todo_text(item)).changed()
+    let toggled = row_ui.checkbox(&mut checked, todo_text(item)).changed();
+
+    let mut removed = false;
+    row_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let delete = ui.add(
+            egui::Button::new(RichText::new("✕").size(14.0).weak())
+                .frame(false)
+                .small(),
+        );
+        if delete.clicked() {
+            removed = true;
+        }
+    });
+
+    TodoRowResponse { toggled, removed }
 }
 
 fn progress_row_width(count: usize, circle_size: f32, spacing: f32) -> f32 {
@@ -409,6 +430,19 @@ impl AppState {
         if let Some(item) = self.todos.get_mut(index) {
             item.done = !item.done;
         }
+    }
+
+    fn remove_todo(&mut self, index: usize) -> bool {
+        if index < self.todos.len() {
+            self.todos.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn clear_todos(&mut self) {
+        self.todos.clear();
     }
 
     fn complete_session(&mut self, now: u128) {
@@ -742,18 +776,25 @@ impl eframe::App for PomoworkApp {
                                 ui.label(RichText::new("TO-DO LIST").size(13.0).weak());
                                 ui.add_space(4.0);
                                 let mut toggled = None;
+                                let mut removed = None;
                                 if self.state.todos.is_empty() {
                                     ui.label(RichText::new("Nothing to do yet").weak().italics());
                                 } else {
                                     todo_list_scroll_area(ui.available_height()).show(ui, |ui| {
                                         for (index, item) in self.state.todos.iter().enumerate() {
-                                            if todo_row(ui, item) {
+                                            let response = todo_row(ui, item);
+                                            if response.removed {
+                                                removed = Some(index);
+                                            } else if response.toggled {
                                                 toggled = Some(index);
                                             }
                                         }
                                     });
                                 }
-                                if let Some(index) = toggled {
+                                if let Some(index) = removed {
+                                    self.state.remove_todo(index);
+                                    self.save(now);
+                                } else if let Some(index) = toggled {
                                     self.state.toggle_todo(index);
                                     self.save(now);
                                 }
@@ -789,6 +830,19 @@ impl eframe::App for PomoworkApp {
                 });
                 ui.add_space(todo_input_bottom_margin());
             });
+
+            egui::Area::new(egui::Id::unique("settings_menu"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+                .show(&ctx, |ui| {
+                    ui.menu_button(RichText::new("☰").size(18.0), |ui| {
+                        if ui.button("Delete all to-dos").clicked() {
+                            self.state.clear_todos();
+                            self.save(now);
+                            ui.close();
+                        }
+                    });
+                });
         });
     }
 
@@ -1386,6 +1440,39 @@ mod tests {
 
         assert_eq!(state.todos.len(), 1);
         assert!(!state.todos[0].done);
+    }
+
+    #[test]
+    fn removing_a_todo_deletes_it() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Walk the dog");
+
+        assert!(state.remove_todo(0));
+
+        assert_eq!(state.todos.len(), 1);
+        assert_eq!(state.todos[0].text, "Walk the dog");
+    }
+
+    #[test]
+    fn removing_an_unknown_todo_is_a_noop() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+
+        assert!(!state.remove_todo(5));
+
+        assert_eq!(state.todos.len(), 1);
+    }
+
+    #[test]
+    fn clearing_todos_removes_all_items() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Walk the dog");
+
+        state.clear_todos();
+
+        assert!(state.todos.is_empty());
     }
 
     #[test]
