@@ -1,7 +1,9 @@
 use eframe::egui::{self, Color32, RichText, ViewportCommand, WindowLevel};
+use rodio::{source::Source, Decoder, DeviceSinkBuilder, Float, MixerDeviceSink, Player};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    io::Cursor,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -25,6 +27,9 @@ const TODO_INPUT_HEIGHT: f32 = 44.0;
 const TODO_LIST_MIN_HEIGHT: f32 = 84.0;
 const TODO_ROW_HEIGHT: f32 = 28.0;
 const TODO_ROW_CORNER_RADIUS: f32 = 6.0;
+const BROWN_NOISE_MP3: &[u8] = include_bytes!("../assets/ticking-brown.mp3");
+const KITCHEN_ALARM_MP3: &[u8] = include_bytes!("../assets/alarm-kitchen.mp3");
+const BROWN_NOISE_VOLUME: Float = 0.35;
 
 fn now_millis() -> u128 {
     SystemTime::now()
@@ -78,6 +83,22 @@ fn timer_group_margin() -> egui::Margin {
 
 fn window_inner_size() -> [f32; 2] {
     [390.0, 800.0]
+}
+
+fn window_level(always_on_top: bool) -> WindowLevel {
+    if always_on_top {
+        WindowLevel::AlwaysOnTop
+    } else {
+        WindowLevel::Normal
+    }
+}
+
+fn pin_button_label(always_on_top: bool) -> &'static str {
+    if always_on_top {
+        "Unpin window"
+    } else {
+        "Pin on top"
+    }
 }
 
 fn todo_list_max_height(available_height: f32) -> f32 {
@@ -360,6 +381,10 @@ fn default_auto_start_next() -> bool {
     true
 }
 
+fn default_sound_enabled() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct AppState {
     stopwatch: TimerState,
@@ -370,6 +395,8 @@ struct AppState {
     completed_pomodoros: u32,
     #[serde(default = "default_auto_start_next")]
     auto_start_next: bool,
+    #[serde(default = "default_sound_enabled")]
+    sound_enabled: bool,
     #[serde(default)]
     todos: Vec<TodoItem>,
     pomodoro_done: bool,
@@ -384,6 +411,7 @@ impl Default for AppState {
             pomodoro_mode: PomodoroMode::default(),
             completed_pomodoros: 0,
             auto_start_next: default_auto_start_next(),
+            sound_enabled: default_sound_enabled(),
             todos: Vec::new(),
             pomodoro_done: false,
             always_on_top: true,
@@ -489,11 +517,97 @@ fn save_state(state: &AppState) {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AudioCommand {
+    StartBrownNoise,
+    StopBrownNoise,
+    PlayKitchenAlarm,
+}
+
+fn should_play_brown_noise(state: &AppState) -> bool {
+    state.sound_enabled && state.pomodoro_mode == PomodoroMode::Pomodoro && state.pomodoro.running
+}
+
+#[derive(Default)]
+struct AudioDirector {
+    noise_playing: bool,
+}
+
+impl AudioDirector {
+    fn sync(
+        &mut self,
+        state: &AppState,
+        session_completed: bool,
+        commands: &mut Vec<AudioCommand>,
+    ) {
+        let wanted = should_play_brown_noise(state);
+        if wanted && !self.noise_playing {
+            commands.push(AudioCommand::StartBrownNoise);
+            self.noise_playing = true;
+        } else if !wanted && self.noise_playing {
+            commands.push(AudioCommand::StopBrownNoise);
+            self.noise_playing = false;
+        }
+        if session_completed && state.sound_enabled {
+            commands.push(AudioCommand::PlayKitchenAlarm);
+        }
+    }
+}
+
+struct AudioPlayer {
+    // The sink must outlive the player, otherwise playback stops immediately.
+    _sink: Option<MixerDeviceSink>,
+    player: Option<Player>,
+}
+
+impl AudioPlayer {
+    fn new() -> Self {
+        Self {
+            _sink: None,
+            player: None,
+        }
+    }
+
+    fn player(&mut self) -> Option<&Player> {
+        if self.player.is_none() {
+            let sink = DeviceSinkBuilder::open_default_sink().ok()?;
+            self.player = Some(Player::connect_new(sink.mixer()));
+            self._sink = Some(sink);
+        }
+        self.player.as_ref()
+    }
+
+    fn apply(&mut self, command: AudioCommand) {
+        let Some(player) = self.player() else {
+            return;
+        };
+        match command {
+            AudioCommand::StartBrownNoise => {
+                player.clear();
+                if let Ok(source) = Decoder::new_looped(Cursor::new(BROWN_NOISE_MP3)) {
+                    player.append(source.amplify(BROWN_NOISE_VOLUME));
+                    player.play();
+                }
+            }
+            AudioCommand::StopBrownNoise => player.clear(),
+            AudioCommand::PlayKitchenAlarm => {
+                player.clear();
+                if let Ok(source) = Decoder::new(Cursor::new(KITCHEN_ALARM_MP3)) {
+                    player.append(source);
+                    player.play();
+                }
+            }
+        }
+    }
+}
+
 struct PomoworkApp {
     state: AppState,
     last_saved: u128,
     applied_window_level: bool,
     todo_input: String,
+    audio: AudioPlayer,
+    audio_director: AudioDirector,
 }
 
 impl PomoworkApp {
@@ -503,6 +617,8 @@ impl PomoworkApp {
             last_saved: 0,
             applied_window_level: false,
             todo_input: String::new(),
+            audio: AudioPlayer::new(),
+            audio_director: AudioDirector::default(),
         }
     }
 
@@ -526,6 +642,51 @@ impl PomoworkApp {
         }
         false
     }
+
+    fn sync_audio(&mut self, session_completed: bool) {
+        let mut commands = Vec::new();
+        self.audio_director
+            .sync(&self.state, session_completed, &mut commands);
+        for command in commands {
+            self.audio.apply(command);
+        }
+    }
+
+    fn toggle_always_on_top(&mut self, ctx: &egui::Context, now: u128) {
+        self.state.always_on_top = !self.state.always_on_top;
+        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(window_level(
+            self.state.always_on_top,
+        )));
+        self.save(now);
+    }
+
+    fn config_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, now: u128) {
+        if ui
+            .checkbox(&mut self.state.auto_start_next, "Auto-start next session")
+            .changed()
+        {
+            self.save(now);
+        }
+        if ui
+            .checkbox(&mut self.state.sound_enabled, "Sounds")
+            .on_hover_text("Brown noise during work sessions, alarm when a session ends")
+            .changed()
+        {
+            self.save(now);
+        }
+        if ui
+            .button(pin_button_label(self.state.always_on_top))
+            .clicked()
+        {
+            self.toggle_always_on_top(ctx, now);
+        }
+        ui.separator();
+        if ui.button("Delete all to-dos").clicked() {
+            self.state.clear_todos();
+            self.save(now);
+            ui.close();
+        }
+    }
 }
 
 impl eframe::App for PomoworkApp {
@@ -533,19 +694,18 @@ impl eframe::App for PomoworkApp {
         let now = now_millis();
 
         if !self.applied_window_level {
-            let level = if self.state.always_on_top {
-                WindowLevel::AlwaysOnTop
-            } else {
-                WindowLevel::Normal
-            };
-            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
+            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(window_level(
+                self.state.always_on_top,
+            )));
             self.applied_window_level = true;
         }
 
         // Finish the session once the selected mode's duration has elapsed.
-        if self.maybe_complete_session(now) {
+        let session_completed = self.maybe_complete_session(now);
+        if session_completed {
             self.save(now);
         }
+        self.sync_audio(session_completed);
 
         // Repaint while a timer is running so the digits keep ticking.
         if self.state.stopwatch.running || self.state.pomodoro.running {
@@ -740,31 +900,6 @@ impl eframe::App for PomoworkApp {
                                 });
                         });
 
-                        ui.add_space(10.0);
-                        if ui
-                            .checkbox(&mut self.state.auto_start_next, "Auto-start next session")
-                            .changed()
-                        {
-                            self.save(now);
-                        }
-
-                        ui.add_space(10.0);
-                        let pin = if self.state.always_on_top {
-                            "Unpin window"
-                        } else {
-                            "Pin on top"
-                        };
-                        if ui.button(pin).clicked() {
-                            self.state.always_on_top = !self.state.always_on_top;
-                            let level = if self.state.always_on_top {
-                                WindowLevel::AlwaysOnTop
-                            } else {
-                                WindowLevel::Normal
-                            };
-                            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
-                            self.save(now);
-                        }
-
                         // ---- To-do list ----
                         ui.add_space(18.0);
                         let todo_width = todo_section_width(ui.available_width());
@@ -836,11 +971,7 @@ impl eframe::App for PomoworkApp {
                 .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
                 .show(&ctx, |ui| {
                     ui.menu_button(RichText::new("☰").size(18.0), |ui| {
-                        if ui.button("Delete all to-dos").clicked() {
-                            self.state.clear_todos();
-                            self.save(now);
-                            ui.close();
-                        }
+                        self.config_menu(ui, &ctx, now);
                     });
                 });
         });
@@ -1841,5 +1972,210 @@ mod tests {
         assert_eq!(footer.height(), todo_footer_height());
         assert_eq!(content.max.y, footer.min.y);
         assert_eq!(content.min, window.min);
+    }
+
+    #[test]
+    fn sounds_are_enabled_by_default_and_persisted() {
+        let value = serde_json::to_value(AppState::default()).unwrap();
+
+        assert_eq!(
+            value.get("sound_enabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn old_state_without_sound_enabled_starts_with_sounds_on() {
+        let mut object = serde_json::to_value(AppState::default())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        object.remove("sound_enabled");
+
+        let restored: AppState = serde_json::from_value(serde_json::Value::Object(object)).unwrap();
+        let restored_value = serde_json::to_value(restored).unwrap();
+
+        assert_eq!(
+            restored_value
+                .get("sound_enabled")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn brown_noise_is_wanted_only_during_a_running_work_session() {
+        let mut state = AppState::default();
+        assert!(!should_play_brown_noise(&state));
+
+        state.pomodoro.toggle(1_000);
+        assert!(should_play_brown_noise(&state));
+
+        state.pomodoro.toggle(4_000);
+        assert!(!should_play_brown_noise(&state));
+
+        state.pomodoro.toggle(10_000);
+        state.sound_enabled = false;
+        assert!(!should_play_brown_noise(&state));
+
+        state.sound_enabled = true;
+        state.select_pomodoro_mode(PomodoroMode::ShortBreak);
+        assert!(!should_play_brown_noise(&state));
+
+        state.select_pomodoro_mode(PomodoroMode::LongBreak);
+        assert!(!should_play_brown_noise(&state));
+
+        state.select_pomodoro_mode(PomodoroMode::Pomodoro);
+        state.pomodoro.toggle(20_000);
+        assert!(should_play_brown_noise(&state));
+    }
+
+    #[test]
+    fn director_starts_and_stops_brown_noise_on_session_transitions() {
+        let mut director = AudioDirector::default();
+        let mut state = AppState::default();
+        let mut commands = Vec::new();
+
+        director.sync(&state, false, &mut commands);
+        assert!(commands.is_empty());
+
+        state.pomodoro.toggle(1_000);
+        director.sync(&state, false, &mut commands);
+        assert_eq!(commands, vec![AudioCommand::StartBrownNoise]);
+
+        commands.clear();
+        director.sync(&state, false, &mut commands);
+        assert!(commands.is_empty(), "start must not repeat every frame");
+
+        state.pomodoro.toggle(4_000);
+        director.sync(&state, false, &mut commands);
+        assert_eq!(commands, vec![AudioCommand::StopBrownNoise]);
+
+        commands.clear();
+        director.sync(&state, false, &mut commands);
+        assert!(commands.is_empty(), "stop must not repeat every frame");
+    }
+
+    #[test]
+    fn director_reacts_to_the_sound_toggle_during_a_work_session() {
+        let mut director = AudioDirector::default();
+        let mut state = AppState::default();
+        state.pomodoro.toggle(1_000);
+        let mut commands = Vec::new();
+
+        director.sync(&state, false, &mut commands);
+        assert_eq!(commands, vec![AudioCommand::StartBrownNoise]);
+
+        commands.clear();
+        state.sound_enabled = false;
+        director.sync(&state, false, &mut commands);
+        assert_eq!(commands, vec![AudioCommand::StopBrownNoise]);
+
+        commands.clear();
+        state.sound_enabled = true;
+        director.sync(&state, false, &mut commands);
+        assert_eq!(commands, vec![AudioCommand::StartBrownNoise]);
+    }
+
+    #[test]
+    fn director_stops_noise_before_playing_the_alarm() {
+        let mut director = AudioDirector::default();
+        let mut state = AppState::default();
+        state.pomodoro.toggle(1_000);
+        let mut commands = Vec::new();
+
+        director.sync(&state, false, &mut commands);
+        assert_eq!(commands, vec![AudioCommand::StartBrownNoise]);
+
+        commands.clear();
+        state.complete_session(2_000);
+        director.sync(&state, true, &mut commands);
+
+        assert_eq!(
+            commands,
+            vec![AudioCommand::StopBrownNoise, AudioCommand::PlayKitchenAlarm]
+        );
+    }
+
+    #[test]
+    fn director_plays_the_alarm_when_any_session_completes() {
+        let mut work = AppState::default();
+        work.pomodoro.toggle(1_000);
+        work.complete_session(2_000);
+        let mut work_commands = Vec::new();
+        AudioDirector::default().sync(&work, true, &mut work_commands);
+        assert_eq!(work_commands, vec![AudioCommand::PlayKitchenAlarm]);
+
+        let mut break_state = AppState {
+            pomodoro_mode: PomodoroMode::ShortBreak,
+            ..Default::default()
+        };
+        break_state.pomodoro.toggle(1_000);
+        break_state.complete_session(2_000);
+        let mut break_commands = Vec::new();
+        AudioDirector::default().sync(&break_state, true, &mut break_commands);
+        assert_eq!(
+            break_commands,
+            vec![
+                AudioCommand::StartBrownNoise,
+                AudioCommand::PlayKitchenAlarm
+            ]
+        );
+    }
+
+    #[test]
+    fn muted_sessions_do_not_play_the_alarm() {
+        let mut state = AppState {
+            sound_enabled: false,
+            ..Default::default()
+        };
+        state.pomodoro.toggle(1_000);
+        state.complete_session(2_000);
+        let mut commands = Vec::new();
+
+        AudioDirector::default().sync(&state, true, &mut commands);
+
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn embedded_sounds_are_decodable_audio() {
+        use rodio::{source::Source, Decoder};
+        use std::io::Cursor;
+
+        for bytes in [BROWN_NOISE_MP3, KITCHEN_ALARM_MP3] {
+            assert!(!bytes.is_empty());
+            let decoder = Decoder::new(Cursor::new(bytes)).unwrap();
+            assert!(decoder.channels().get() > 0);
+            assert!(decoder.sample_rate().get() > 0);
+            assert_eq!(decoder.take(1_024).count(), 1_024);
+        }
+    }
+
+    #[test]
+    fn window_level_follows_the_pin_state() {
+        assert_eq!(window_level(true), WindowLevel::AlwaysOnTop);
+        assert_eq!(window_level(false), WindowLevel::Normal);
+    }
+
+    #[test]
+    fn pin_button_label_follows_the_pin_state() {
+        assert_eq!(pin_button_label(true), "Unpin window");
+        assert_eq!(pin_button_label(false), "Pin on top");
+    }
+
+    #[test]
+    fn toggling_the_pin_flips_state_and_saves() {
+        let ctx = egui::Context::default();
+        let mut app = PomoworkApp::new(AppState::default());
+
+        app.toggle_always_on_top(&ctx, 3_000);
+        assert!(!app.state.always_on_top);
+        assert_eq!(app.last_saved, 3_000);
+
+        app.toggle_always_on_top(&ctx, 6_000);
+        assert!(app.state.always_on_top);
+        assert_eq!(app.last_saved, 6_000);
     }
 }
