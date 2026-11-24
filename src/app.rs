@@ -42,7 +42,7 @@ impl PomoworkApp {
     fn maybe_complete_session(&mut self, now: u128) -> bool {
         let mode_seconds = self.state.pomodoro_mode.seconds();
         if self.state.pomodoro.running && self.state.pomodoro.elapsed(now) >= mode_seconds {
-            self.state.complete_session(now);
+            self.state.complete_session();
             return true;
         }
         false
@@ -66,12 +66,6 @@ impl PomoworkApp {
     }
 
     fn config_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, now: u128) {
-        if ui
-            .checkbox(&mut self.state.auto_start_next, "Auto-start next session")
-            .changed()
-        {
-            self.save(now);
-        }
         if ui
             .checkbox(&mut self.state.sound_enabled, "Sounds")
             .on_hover_text("Brown noise during work sessions, alarm when a session ends")
@@ -405,6 +399,8 @@ mod tests {
         assert!(app.maybe_complete_session(now));
         assert_eq!(app.state.pomodoro_mode, PomodoroMode::Pomodoro);
         assert_eq!(app.state.completed_pomodoros, 2);
+        assert!(!app.state.pomodoro.running);
+        assert!(app.state.pomodoro_done);
     }
 
     #[test]
@@ -427,6 +423,8 @@ mod tests {
         assert!(app.maybe_complete_session(now));
         assert_eq!(app.state.pomodoro_mode, PomodoroMode::ShortBreak);
         assert_eq!(app.state.completed_pomodoros, 1);
+        assert!(!app.state.pomodoro.running);
+        assert!(app.state.pomodoro_done);
     }
 
     #[test]

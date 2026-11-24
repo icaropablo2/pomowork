@@ -37,10 +37,6 @@ impl PomodoroMode {
     }
 }
 
-fn default_auto_start_next() -> bool {
-    true
-}
-
 fn default_sound_enabled() -> bool {
     true
 }
@@ -53,8 +49,6 @@ pub(crate) struct AppState {
     pub(crate) pomodoro_mode: PomodoroMode,
     #[serde(default)]
     pub(crate) completed_pomodoros: u32,
-    #[serde(default = "default_auto_start_next")]
-    pub(crate) auto_start_next: bool,
     #[serde(default = "default_sound_enabled")]
     pub(crate) sound_enabled: bool,
     #[serde(default)]
@@ -70,7 +64,6 @@ impl Default for AppState {
             pomodoro: TimerState::default(),
             pomodoro_mode: PomodoroMode::default(),
             completed_pomodoros: 0,
-            auto_start_next: default_auto_start_next(),
             sound_enabled: default_sound_enabled(),
             todos: Vec::new(),
             pomodoro_done: false,
@@ -133,17 +126,14 @@ impl AppState {
         self.todos.clear();
     }
 
-    pub(crate) fn complete_session(&mut self, now: u128) {
+    pub(crate) fn complete_session(&mut self) {
         let next = self.next_mode();
         if self.pomodoro_mode == PomodoroMode::Pomodoro {
             self.completed_pomodoros += 1;
         }
         self.pomodoro_mode = next;
         self.pomodoro.reset();
-        self.pomodoro_done = !self.auto_start_next;
-        if self.auto_start_next {
-            self.pomodoro.toggle(now);
-        }
+        self.pomodoro_done = true;
     }
 }
 
@@ -152,7 +142,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_state_defaults_enable_always_on_top_and_auto_start() {
+    fn app_state_defaults_enable_always_on_top() {
         let state = AppState::default();
         assert!(!state.stopwatch.running);
         assert_eq!(state.stopwatch.elapsed_secs, 0.0);
@@ -160,7 +150,6 @@ mod tests {
         assert_eq!(state.pomodoro.elapsed_secs, 0.0);
         assert_eq!(state.pomodoro_mode, PomodoroMode::Pomodoro);
         assert_eq!(state.completed_pomodoros, 0);
-        assert!(state.auto_start_next);
         assert!(!state.pomodoro_done);
         assert!(state.always_on_top);
     }
@@ -179,7 +168,6 @@ mod tests {
         state.stopwatch.toggle(1_000);
         state.select_pomodoro_mode(PomodoroMode::LongBreak);
         state.completed_pomodoros = 4;
-        state.auto_start_next = false;
         state.always_on_top = false;
         let json = serde_json::to_string(&state).unwrap();
         let restored: AppState = serde_json::from_str(&json).unwrap();
@@ -187,7 +175,6 @@ mod tests {
         assert_eq!(restored.stopwatch.started_at, Some(1_000));
         assert_eq!(restored.pomodoro_mode, PomodoroMode::LongBreak);
         assert_eq!(restored.completed_pomodoros, 4);
-        assert!(!restored.auto_start_next);
         assert!(!restored.always_on_top);
     }
 
@@ -198,11 +185,9 @@ mod tests {
         let object = value.as_object_mut().unwrap();
         object.remove("pomodoro_mode");
         object.remove("completed_pomodoros");
-        object.remove("auto_start_next");
         let restored: AppState = serde_json::from_value(value).unwrap();
         assert_eq!(restored.pomodoro_mode, PomodoroMode::Pomodoro);
         assert_eq!(restored.completed_pomodoros, 0);
-        assert!(restored.auto_start_next);
     }
 
     #[test]
@@ -249,33 +234,41 @@ mod tests {
     }
 
     #[test]
-    fn completing_a_session_advances_and_starts_next_by_default() {
+    fn completing_a_session_switches_to_a_break_without_starting_it() {
         let mut state = AppState::default();
         state.pomodoro.toggle(1_000);
 
-        state.complete_session(2_000);
+        state.complete_session();
 
         assert_eq!(state.pomodoro_mode, PomodoroMode::ShortBreak);
         assert_eq!(state.completed_pomodoros, 1);
-        assert!(state.pomodoro.running);
-        assert_eq!(state.pomodoro.started_at, Some(2_000));
-        assert!(!state.pomodoro_done);
+        assert!(!state.pomodoro.running);
+        assert_eq!(state.pomodoro.started_at, None);
+        assert_eq!(state.pomodoro.elapsed(10_000), 0.0);
+        assert!(state.pomodoro_done);
     }
 
     #[test]
-    fn completing_a_session_can_wait_for_manual_start() {
-        let mut state = AppState {
-            auto_start_next: false,
-            ..Default::default()
-        };
+    fn a_saved_legacy_auto_start_setting_is_ignored() {
+        let mut value = serde_json::to_value(AppState::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("auto_start_next".to_owned(), serde_json::json!(true));
+        let mut state: AppState = serde_json::from_value(value).unwrap();
         state.pomodoro.toggle(1_000);
 
-        state.complete_session(2_000);
+        state.complete_session();
 
-        assert_eq!(state.pomodoro_mode, PomodoroMode::ShortBreak);
         assert!(!state.pomodoro.running);
         assert!(state.pomodoro_done);
-        assert_eq!(state.pomodoro.elapsed(10_000), 0.0);
+    }
+
+    #[test]
+    fn auto_start_is_not_part_of_the_saved_state() {
+        let value = serde_json::to_value(AppState::default()).unwrap();
+
+        assert!(value.get("auto_start_next").is_none());
     }
 
     #[test]
@@ -314,26 +307,28 @@ mod tests {
         };
         state.pomodoro.toggle(1_000);
 
-        state.complete_session(2_000);
+        state.complete_session();
 
         assert_eq!(state.completed_pomodoros, 2);
         assert_eq!(state.pomodoro_mode, PomodoroMode::Pomodoro);
+        assert!(!state.pomodoro.running);
+        assert!(state.pomodoro_done);
     }
 
     #[test]
-    fn fourth_pomodoro_starts_the_long_break() {
+    fn fourth_pomodoro_switches_to_the_long_break_without_starting_it() {
         let mut state = AppState {
             completed_pomodoros: 3,
             ..Default::default()
         };
         state.pomodoro.toggle(1_000);
 
-        state.complete_session(2_000);
+        state.complete_session();
 
         assert_eq!(state.completed_pomodoros, 4);
         assert_eq!(state.pomodoro_mode, PomodoroMode::LongBreak);
-        assert!(state.pomodoro.running);
-        assert_eq!(state.pomodoro.started_at, Some(2_000));
+        assert!(!state.pomodoro.running);
+        assert!(state.pomodoro_done);
     }
 
     #[test]

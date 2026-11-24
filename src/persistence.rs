@@ -53,7 +53,6 @@ mod tests {
         let state = load_state_from(&path);
 
         assert!(state.always_on_top);
-        assert!(state.auto_start_next);
         assert_eq!(state.completed_pomodoros, 0);
         assert_eq!(state.pomodoro_mode, PomodoroMode::Pomodoro);
     }
@@ -66,7 +65,6 @@ mod tests {
         let state = load_state_from(&path);
 
         assert!(state.always_on_top);
-        assert!(state.auto_start_next);
         assert_eq!(state.pomodoro_mode, PomodoroMode::Pomodoro);
         fs::remove_file(&path).unwrap();
     }
@@ -80,7 +78,6 @@ mod tests {
         expected.stopwatch.toggle(1_000);
         expected.pomodoro_mode = PomodoroMode::LongBreak;
         expected.completed_pomodoros = 4;
-        expected.auto_start_next = false;
         expected.pomodoro_done = true;
         expected.always_on_top = false;
         expected.add_todo("Buy milk");
@@ -93,7 +90,6 @@ mod tests {
         assert_eq!(restored.stopwatch.started_at, Some(1_000));
         assert_eq!(restored.pomodoro_mode, PomodoroMode::LongBreak);
         assert_eq!(restored.completed_pomodoros, 4);
-        assert!(!restored.auto_start_next);
         assert!(restored.pomodoro_done);
         assert!(!restored.always_on_top);
         assert_eq!(restored.todos, expected.todos);

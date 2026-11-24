@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(commands, vec![AudioCommand::StartBrownNoise]);
 
         commands.clear();
-        state.complete_session(2_000);
+        state.complete_session();
         director.sync(&state, true, &mut commands);
 
         assert_eq!(
@@ -193,7 +193,7 @@ mod tests {
     fn director_plays_the_alarm_when_any_session_completes() {
         let mut work = AppState::default();
         work.pomodoro.toggle(1_000);
-        work.complete_session(2_000);
+        work.complete_session();
         let mut work_commands = Vec::new();
         AudioDirector::default().sync(&work, true, &mut work_commands);
         assert_eq!(work_commands, vec![AudioCommand::PlayKitchenAlarm]);
@@ -203,16 +203,10 @@ mod tests {
             ..Default::default()
         };
         break_state.pomodoro.toggle(1_000);
-        break_state.complete_session(2_000);
+        break_state.complete_session();
         let mut break_commands = Vec::new();
         AudioDirector::default().sync(&break_state, true, &mut break_commands);
-        assert_eq!(
-            break_commands,
-            vec![
-                AudioCommand::StartBrownNoise,
-                AudioCommand::PlayKitchenAlarm
-            ]
-        );
+        assert_eq!(break_commands, vec![AudioCommand::PlayKitchenAlarm]);
     }
 
     #[test]
@@ -222,7 +216,7 @@ mod tests {
             ..Default::default()
         };
         state.pomodoro.toggle(1_000);
-        state.complete_session(2_000);
+        state.complete_session();
         let mut commands = Vec::new();
 
         AudioDirector::default().sync(&state, true, &mut commands);
