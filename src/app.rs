@@ -309,18 +309,23 @@ impl eframe::App for PomoworkApp {
                             |ui| {
                                 ui.label(RichText::new("TO-DO LIST").size(13.0).weak());
                                 ui.add_space(4.0);
+                                let focused = self.state.focused_todo;
                                 let mut toggled = None;
                                 let mut removed = None;
+                                let mut focus_toggled = None;
                                 if self.state.todos.is_empty() {
                                     ui.label(RichText::new("Nothing to do yet").weak().italics());
                                 } else {
                                     todo_list_scroll_area(ui.available_height()).show(ui, |ui| {
                                         for (index, item) in self.state.todos.iter().enumerate() {
-                                            let response = todo_row(ui, item);
+                                            let response =
+                                                todo_row(ui, item, focused == Some(index));
                                             if response.removed {
                                                 removed = Some(index);
                                             } else if response.toggled {
                                                 toggled = Some(index);
+                                            } else if response.focus_toggled {
+                                                focus_toggled = Some(index);
                                             }
                                         }
                                     });
@@ -330,6 +335,9 @@ impl eframe::App for PomoworkApp {
                                     self.save(now);
                                 } else if let Some(index) = toggled {
                                     self.state.toggle_todo(index);
+                                    self.save(now);
+                                } else if let Some(index) = focus_toggled {
+                                    self.state.toggle_focus_todo(index);
                                     self.save(now);
                                 }
                             },
@@ -486,5 +494,18 @@ mod tests {
         app.toggle_always_on_top(&ctx, 6_000);
         assert!(app.state.always_on_top);
         assert_eq!(app.last_saved, 6_000);
+    }
+
+    #[test]
+    fn completing_a_focused_session_via_logic_credits_the_todo() {
+        let mut app = PomoworkApp::new(AppState::default());
+        app.state.add_todo("Write report");
+        app.state.toggle_focus_todo(0);
+        app.state.pomodoro.toggle(1_000);
+        let now = 1_000 + (POMODORO_SECONDS as u128 * 1_000);
+
+        assert!(app.maybe_complete_session(now));
+        assert_eq!(app.state.todos[0].sessions, 1);
+        assert_eq!(app.state.completed_pomodoros, 1);
     }
 }

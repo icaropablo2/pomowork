@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct TodoItem {
     pub(crate) text: String,
     pub(crate) done: bool,
+    #[serde(default)]
+    pub(crate) sessions: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +55,8 @@ pub(crate) struct AppState {
     pub(crate) sound_enabled: bool,
     #[serde(default)]
     pub(crate) todos: Vec<TodoItem>,
+    #[serde(default)]
+    pub(crate) focused_todo: Option<usize>,
     pub(crate) pomodoro_done: bool,
     pub(crate) always_on_top: bool,
 }
@@ -66,6 +70,7 @@ impl Default for AppState {
             completed_pomodoros: 0,
             sound_enabled: default_sound_enabled(),
             todos: Vec::new(),
+            focused_todo: None,
             pomodoro_done: false,
             always_on_top: true,
         }
@@ -103,6 +108,7 @@ impl AppState {
         self.todos.push(TodoItem {
             text: text.to_owned(),
             done: false,
+            sessions: 0,
         });
         true
     }
@@ -113,23 +119,50 @@ impl AppState {
         }
     }
 
+    pub(crate) fn toggle_focus_todo(&mut self, index: usize) {
+        if index >= self.todos.len() {
+            return;
+        }
+        self.focused_todo = if self.focused_todo == Some(index) {
+            None
+        } else {
+            Some(index)
+        };
+    }
+
     pub(crate) fn remove_todo(&mut self, index: usize) -> bool {
         if index < self.todos.len() {
             self.todos.remove(index);
+            self.adjust_focus_after_removal(index);
             true
         } else {
             false
         }
     }
 
+    fn adjust_focus_after_removal(&mut self, removed: usize) {
+        self.focused_todo = match self.focused_todo {
+            Some(focused) if focused == removed => None,
+            Some(focused) if focused > removed => Some(focused - 1),
+            other => other,
+        };
+    }
+
     pub(crate) fn clear_todos(&mut self) {
         self.todos.clear();
+        self.focused_todo = None;
     }
 
     pub(crate) fn complete_session(&mut self) {
         let next = self.next_mode();
         if self.pomodoro_mode == PomodoroMode::Pomodoro {
             self.completed_pomodoros += 1;
+            if let Some(item) = self
+                .focused_todo
+                .and_then(|index| self.todos.get_mut(index))
+            {
+                item.sessions += 1;
+            }
         }
         self.pomodoro_mode = next;
         self.pomodoro.reset();
@@ -364,10 +397,12 @@ mod tests {
                 TodoItem {
                     text: "Buy milk".to_owned(),
                     done: false,
+                    sessions: 0,
                 },
                 TodoItem {
                     text: "Walk the dog".to_owned(),
                     done: false,
+                    sessions: 0,
                 },
             ]
         );
@@ -491,5 +526,206 @@ mod tests {
         let restored: AppState = serde_json::from_value(value).unwrap();
 
         assert!(restored.todos.is_empty());
+    }
+
+    #[test]
+    fn focus_is_optional_and_defaults_to_none() {
+        let state = AppState::default();
+
+        assert_eq!(state.focused_todo, None);
+    }
+
+    #[test]
+    fn new_todos_have_no_focus_sessions() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+
+        assert_eq!(state.todos[0].sessions, 0);
+    }
+
+    #[test]
+    fn toggling_focus_selects_then_clears_an_item() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Walk the dog");
+
+        state.toggle_focus_todo(1);
+        assert_eq!(state.focused_todo, Some(1));
+
+        state.toggle_focus_todo(1);
+        assert_eq!(state.focused_todo, None);
+
+        state.toggle_focus_todo(0);
+        assert_eq!(state.focused_todo, Some(0));
+    }
+
+    #[test]
+    fn focusing_a_different_item_moves_the_focus() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Walk the dog");
+
+        state.toggle_focus_todo(0);
+        state.toggle_focus_todo(1);
+
+        assert_eq!(state.focused_todo, Some(1));
+    }
+
+    #[test]
+    fn focusing_an_unknown_todo_is_a_noop() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+
+        state.toggle_focus_todo(7);
+
+        assert_eq!(state.focused_todo, None);
+        assert_eq!(state.todos.len(), 1);
+    }
+
+    #[test]
+    fn completing_a_pomodoro_credits_only_the_focused_todo() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Write report");
+        state.toggle_focus_todo(1);
+
+        state.complete_session();
+
+        assert_eq!(state.todos[0].sessions, 0);
+        assert_eq!(state.todos[1].sessions, 1);
+    }
+
+    #[test]
+    fn each_completed_pomodoro_appends_a_focus_circle() {
+        let mut state = AppState::default();
+        state.add_todo("Write report");
+        state.toggle_focus_todo(0);
+
+        for _ in 0..3 {
+            state.select_pomodoro_mode(PomodoroMode::Pomodoro);
+            state.complete_session();
+        }
+
+        assert_eq!(state.todos[0].sessions, 3);
+    }
+
+    #[test]
+    fn completing_a_break_does_not_credit_the_focused_todo() {
+        let mut state = AppState {
+            pomodoro_mode: PomodoroMode::ShortBreak,
+            ..Default::default()
+        };
+        state.add_todo("Write report");
+        state.toggle_focus_todo(0);
+
+        state.complete_session();
+
+        assert_eq!(state.todos[0].sessions, 0);
+    }
+
+    #[test]
+    fn running_a_pomodoro_without_focus_does_not_credit_any_todo() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Walk the dog");
+
+        state.complete_session();
+
+        assert!(state.todos.iter().all(|item| item.sessions == 0));
+    }
+
+    #[test]
+    fn removing_the_focused_todo_clears_the_focus() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Walk the dog");
+        state.toggle_focus_todo(0);
+
+        assert!(state.remove_todo(0));
+
+        assert_eq!(state.focused_todo, None);
+        assert_eq!(state.todos.len(), 1);
+    }
+
+    #[test]
+    fn removing_an_item_before_the_focus_shifts_the_focus() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Walk the dog");
+        state.add_todo("Write report");
+        state.toggle_focus_todo(2);
+
+        assert!(state.remove_todo(0));
+
+        assert_eq!(state.focused_todo, Some(1));
+    }
+
+    #[test]
+    fn removing_an_item_after_the_focus_keeps_the_focus() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Walk the dog");
+        state.toggle_focus_todo(0);
+
+        assert!(state.remove_todo(1));
+
+        assert_eq!(state.focused_todo, Some(0));
+    }
+
+    #[test]
+    fn a_shifted_focus_still_credits_the_right_todo_after_removal() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Write report");
+        state.toggle_focus_todo(1);
+
+        assert!(state.remove_todo(0));
+        state.complete_session();
+
+        assert_eq!(state.todos[0].sessions, 1);
+    }
+
+    #[test]
+    fn clearing_todos_clears_the_focus() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.toggle_focus_todo(0);
+
+        state.clear_todos();
+
+        assert_eq!(state.focused_todo, None);
+    }
+
+    #[test]
+    fn focus_and_sessions_survive_serialization() {
+        let mut state = AppState::default();
+        state.add_todo("Buy milk");
+        state.add_todo("Write report");
+        state.toggle_focus_todo(1);
+        state.complete_session();
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.focused_todo, Some(1));
+        assert_eq!(restored.todos[0].sessions, 0);
+        assert_eq!(restored.todos[1].sessions, 1);
+    }
+
+    #[test]
+    fn old_state_without_focus_or_sessions_loads_with_defaults() {
+        let mut value = serde_json::to_value(AppState::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("focused_todo");
+        object.insert(
+            "todos".to_owned(),
+            serde_json::json!([{ "text": "Buy milk", "done": false }]),
+        );
+
+        let restored: AppState = serde_json::from_value(value).unwrap();
+
+        assert_eq!(restored.focused_todo, None);
+        assert_eq!(restored.todos.len(), 1);
+        assert_eq!(restored.todos[0].sessions, 0);
     }
 }

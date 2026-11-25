@@ -7,6 +7,7 @@ pub(crate) const POMODORO_PANEL_SIZE: f32 = 320.0;
 pub(crate) const POMODORO_PANEL_MARGIN: f32 = 14.0;
 pub(crate) const POMODORO_TOP_PADDING: f32 = 8.0;
 pub(crate) const PROGRESS_CIRCLE_SIZE: f32 = 8.0;
+pub(crate) const FOCUS_SESSION_CIRCLE_SIZE: f32 = 7.0;
 pub(crate) const BUTTON_PADDING: f32 = 8.0;
 pub(crate) const BUTTON_BASE_HEIGHT: f32 = 26.0;
 pub(crate) const TIMER_GROUP_PADDING: i8 = 32;
@@ -76,6 +77,14 @@ pub(crate) fn pin_button_label(always_on_top: bool) -> &'static str {
         "Unpin window"
     } else {
         "Pin on top"
+    }
+}
+
+pub(crate) fn focus_button_label(focused: bool) -> &'static str {
+    if focused {
+        "◉"
+    } else {
+        "◎"
     }
 }
 
@@ -185,12 +194,13 @@ pub(crate) fn todo_row_hovered(ui: &egui::Ui, rect: egui::Rect) -> bool {
 pub(crate) struct TodoRowResponse {
     pub(crate) toggled: bool,
     pub(crate) removed: bool,
+    pub(crate) focus_toggled: bool,
 }
 
-pub(crate) fn todo_row(ui: &mut egui::Ui, item: &TodoItem) -> TodoRowResponse {
+pub(crate) fn todo_row(ui: &mut egui::Ui, item: &TodoItem, focused: bool) -> TodoRowResponse {
     let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), TODO_ROW_HEIGHT));
     let hovered = todo_row_hovered(ui, rect);
-    let background = todo_row_background(hovered);
+    let background = todo_row_background(hovered || focused);
     ui.painter()
         .rect_filled(rect, TODO_ROW_CORNER_RADIUS, background);
 
@@ -202,7 +212,10 @@ pub(crate) fn todo_row(ui: &mut egui::Ui, item: &TodoItem) -> TodoRowResponse {
     let mut checked = item.done;
     let toggled = row_ui.checkbox(&mut checked, todo_text(item)).changed();
 
+    focus_sessions_indicator(&mut row_ui, item.sessions);
+
     let mut removed = false;
+    let mut focus_toggled = false;
     row_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let delete = ui.add(
             egui::Button::new(RichText::new("✕").size(14.0).weak())
@@ -212,9 +225,22 @@ pub(crate) fn todo_row(ui: &mut egui::Ui, item: &TodoItem) -> TodoRowResponse {
         if delete.clicked() {
             removed = true;
         }
+        let focus = ui.add(
+            egui::Button::new(RichText::new(focus_button_label(focused)).size(14.0))
+                .frame(false)
+                .small()
+                .selected(focused),
+        );
+        if focus.clicked() {
+            focus_toggled = true;
+        }
     });
 
-    TodoRowResponse { toggled, removed }
+    TodoRowResponse {
+        toggled,
+        removed,
+        focus_toggled,
+    }
 }
 
 pub(crate) fn progress_row_width(count: usize, circle_size: f32, spacing: f32) -> f32 {
@@ -273,6 +299,27 @@ pub(crate) fn progress_indicator(ui: &mut egui::Ui, completed: u32, total: u32) 
     });
 }
 
+pub(crate) fn focus_session_circles(count: u32) -> Vec<CircleState> {
+    (0..count).map(|_| CircleState::Filled).collect()
+}
+
+pub(crate) fn focus_sessions_indicator(ui: &mut egui::Ui, count: u32) {
+    let states = focus_session_circles(count);
+    if states.is_empty() {
+        return;
+    }
+    ui.add_space(4.0);
+    let fill = ui.visuals().selection.bg_fill;
+    for _ in states {
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(FOCUS_SESSION_CIRCLE_SIZE, FOCUS_SESSION_CIRCLE_SIZE),
+            egui::Sense::hover(),
+        );
+        ui.painter()
+            .circle_filled(rect.center(), FOCUS_SESSION_CIRCLE_SIZE / 2.0, fill);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,10 +339,12 @@ mod tests {
         let pending = TodoItem {
             text: "Buy milk".to_owned(),
             done: false,
+            sessions: 0,
         };
         let done = TodoItem {
             text: "Buy milk".to_owned(),
             done: true,
+            sessions: 0,
         };
 
         assert_eq!(todo_text(&pending), RichText::new("Buy milk"));
@@ -619,8 +668,9 @@ mod tests {
                     let item = TodoItem {
                         text: format!("Task {number}"),
                         done: false,
+                        sessions: 0,
                     };
-                    todo_row(ui, &item);
+                    todo_row(ui, &item, false);
                 }
             });
 
@@ -648,8 +698,9 @@ mod tests {
                     let item = TodoItem {
                         text: format!("Task {number}"),
                         done: false,
+                        sessions: 0,
                     };
-                    todo_row(ui, &item);
+                    todo_row(ui, &item, false);
                 }
             });
 
@@ -687,5 +738,34 @@ mod tests {
         assert_eq!(todo_section_width(500.0), panel_width);
         assert_eq!(todo_section_width(390.0), panel_width);
         assert_eq!(todo_input_width(500.0), todo_section_width(500.0));
+    }
+
+    #[test]
+    fn focus_button_label_follows_the_focus_state() {
+        assert_eq!(focus_button_label(true), "◉");
+        assert_eq!(focus_button_label(false), "◎");
+    }
+
+    #[test]
+    fn focus_session_circles_match_the_completed_sessions() {
+        assert!(focus_session_circles(0).is_empty());
+        assert_eq!(focus_session_circles(3), vec![CircleState::Filled; 3]);
+    }
+
+    #[test]
+    fn todo_row_renders_focus_and_session_circles() {
+        egui::__run_test_ui(|ui| {
+            let focused_item = TodoItem {
+                text: "Write report".to_owned(),
+                done: false,
+                sessions: 3,
+            };
+
+            let response = todo_row(ui, &focused_item, true);
+
+            assert!(!response.toggled);
+            assert!(!response.removed);
+            assert!(!response.focus_toggled);
+        });
     }
 }
