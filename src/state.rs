@@ -87,6 +87,18 @@ impl AppState {
         self.pomodoro_done = false;
     }
 
+    pub(crate) fn toggle_pomodoro(&mut self, now: u128) {
+        let starting = !self.pomodoro.running;
+        if self.pomodoro_done {
+            self.pomodoro.reset();
+            self.pomodoro_done = false;
+        }
+        self.pomodoro.toggle(now);
+        if starting && !self.stopwatch.running {
+            self.stopwatch.toggle(now);
+        }
+    }
+
     pub(crate) fn next_mode(&self) -> PomodoroMode {
         match self.pomodoro_mode {
             PomodoroMode::Pomodoro => {
@@ -238,6 +250,84 @@ mod tests {
         state.pomodoro.toggle(4_000);
         state.select_pomodoro_mode(PomodoroMode::ShortBreak);
         assert!(state.pomodoro.running);
+    }
+
+    #[test]
+    fn starting_a_pomodoro_starts_an_idle_stopwatch() {
+        let mut state = AppState::default();
+
+        state.toggle_pomodoro(1_000);
+
+        assert!(state.pomodoro.running);
+        assert!(state.stopwatch.running);
+        assert_eq!(state.stopwatch.started_at, Some(1_000));
+        assert_eq!(state.stopwatch.elapsed(1_000), 0.0);
+    }
+
+    #[test]
+    fn starting_a_pomodoro_resumes_a_paused_stopwatch() {
+        let mut state = AppState::default();
+        state.stopwatch.toggle(1_000);
+        state.stopwatch.toggle(4_000);
+        assert_eq!(state.stopwatch.elapsed(4_000), 3.0);
+
+        state.toggle_pomodoro(10_000);
+
+        assert!(state.stopwatch.running);
+        assert_eq!(state.stopwatch.elapsed(10_000), 3.0);
+        assert_eq!(state.stopwatch.elapsed(12_000), 5.0);
+    }
+
+    #[test]
+    fn starting_any_mode_starts_an_idle_stopwatch() {
+        for mode in PomodoroMode::ALL {
+            let mut state = AppState {
+                pomodoro_mode: mode,
+                ..Default::default()
+            };
+
+            state.toggle_pomodoro(1_000);
+
+            assert!(state.pomodoro.running, "{mode:?}");
+            assert!(state.stopwatch.running, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn pausing_a_pomodoro_does_not_start_the_stopwatch() {
+        let mut state = AppState::default();
+        state.pomodoro.toggle(1_000);
+
+        state.toggle_pomodoro(4_000);
+
+        assert!(!state.pomodoro.running);
+        assert!(!state.stopwatch.running);
+        assert_eq!(state.stopwatch.started_at, None);
+    }
+
+    #[test]
+    fn starting_a_pomodoro_leaves_an_already_running_stopwatch_untouched() {
+        let mut state = AppState::default();
+        state.stopwatch.toggle(1_000);
+
+        state.toggle_pomodoro(2_000);
+
+        assert!(state.stopwatch.running);
+        assert_eq!(state.stopwatch.started_at, Some(1_000));
+    }
+
+    #[test]
+    fn starting_a_completed_session_starts_an_idle_stopwatch() {
+        let mut state = AppState {
+            pomodoro_done: true,
+            ..Default::default()
+        };
+
+        state.toggle_pomodoro(1_000);
+
+        assert!(!state.pomodoro_done);
+        assert!(state.pomodoro.running);
+        assert!(state.stopwatch.running);
     }
 
     #[test]

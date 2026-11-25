@@ -4,7 +4,7 @@ A small cross-platform desktop app that combines a stopwatch, a Pomodoro timer w
 
 ## Features
 
-- **Total worked today** (stopwatch) on top, with no border, with Start/Pause and Reset (shown only once paused with time on the clock). Displays `HH:MM:SS`.
+- **Total worked today** (stopwatch) on top, with no border, with Start/Pause and Reset (shown only once paused with time on the clock). Displays `HH:MM:SS`. Starting any timer session (Pomodoro, Short Break, or Long Break) also starts or resumes the stopwatch if it isn't already running.
 - **Timer** below it in a darker, centered square panel with session buttons at the top: **Pomodoro** (25 min), **Short Break** (5 min), and **Long Break** (15 min). The active mode is highlighted, and the Start button uses the same color. You can select any session manually at any time (this resets that session's timer).
 - **Auto-advance** selects the next session without starting it: a finished Pomodoro switches to a Short Break, and every 4th Pomodoro switches to a Long Break; a finished break switches back to a new Pomodoro. Press Start when you're ready to begin. Four circles show the Pomodoros completed in the current cycle before a long break.
 - **To-do list** below the timer: type into the grey input field pinned to the bottom of the window (80 px above the lower edge, matching the Pomodoro panel's width, with a drop shadow) and press Enter to append an item. Tick an item's checkbox to mark it done; completed items are shown with a strikethrough and can be unticked again. Remove an item inline with its delete button. The list grows to show every item that fits in the available space and only scrolls when the items no longer fit. The rest of the app scrolls if the window gets too small.

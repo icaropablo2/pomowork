@@ -34,6 +34,11 @@ impl PomoworkApp {
         }
     }
 
+    fn toggle_pomodoro(&mut self, now: u128) {
+        self.state.toggle_pomodoro(now);
+        self.save(now);
+    }
+
     fn save(&mut self, now: u128) {
         save_state(&self.state);
         self.last_saved = now;
@@ -286,12 +291,7 @@ impl eframe::App for PomoworkApp {
                                                     )
                                                     .clicked()
                                                 {
-                                                    if self.state.pomodoro_done {
-                                                        self.state.pomodoro.reset();
-                                                        self.state.pomodoro_done = false;
-                                                    }
-                                                    self.state.pomodoro.toggle(now);
-                                                    self.save(now);
+                                                    self.toggle_pomodoro(now);
                                                 }
                                             });
                                         },
@@ -494,6 +494,29 @@ mod tests {
         app.toggle_always_on_top(&ctx, 6_000);
         assert!(app.state.always_on_top);
         assert_eq!(app.last_saved, 6_000);
+    }
+
+    #[test]
+    fn starting_the_pomodoro_via_the_app_starts_the_stopwatch_and_saves() {
+        let mut app = PomoworkApp::new(AppState::default());
+
+        app.toggle_pomodoro(5_000);
+
+        assert!(app.state.pomodoro.running);
+        assert!(app.state.stopwatch.running);
+        assert_eq!(app.last_saved, 5_000);
+    }
+
+    #[test]
+    fn pausing_the_pomodoro_via_the_app_does_not_touch_the_stopwatch() {
+        let mut app = PomoworkApp::new(AppState::default());
+        app.state.pomodoro.toggle(1_000);
+
+        app.toggle_pomodoro(5_000);
+
+        assert!(!app.state.pomodoro.running);
+        assert!(!app.state.stopwatch.running);
+        assert_eq!(app.last_saved, 5_000);
     }
 
     #[test]
